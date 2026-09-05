@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TabSync</title>
+  <link rel="stylesheet" href="newtab.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="../../icons/icon48.png" alt="" width="28" height="28">
+      <span data-i18n="appTitle">TabSync</span>
+    </div>
+
+    <div class="search-wrap">
+      <input id="search" type="search" autocomplete="off" data-i18n-ph="searchPlaceholder" placeholder="Search lists and links…">
+      <div id="search-hint" class="search-hint" hidden></div>
+    </div>
+
+    <div class="actions">
+      <span id="status" class="status-pill" title=""></span>
+      <button id="btn-refresh" class="icon-btn" data-i18n-title="refresh" title="Refresh">&#8635;</button>
+      <button id="btn-sync" class="icon-btn" data-i18n-title="syncNow" title="Sync now">&#10227;</button>
+      <button id="btn-theme" class="icon-btn" title="Theme">&#9681;</button>
+      <button id="btn-lang" class="icon-btn" title="Language">EN/AR</button>
+      <button id="btn-settings" class="icon-btn" data-i18n-title="settings" title="Settings">&#9881;</button>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" hidden>
+    <span id="banner-text"></span>
+    <button id="banner-btn"></button>
+  </div>
+
+  <main id="grid" class="grid"></main>
+
+  <div id="empty" class="empty" hidden>
+    <p data-i18n="noLists">No lists yet. Create a tab group and it will appear here.</p>
+  </div>
+
+  <script type="module" src="newtab.js"></script>
+</body>
+</html>

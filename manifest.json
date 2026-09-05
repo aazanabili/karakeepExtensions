@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "TabSync Dashboard",
+  "version": "0.1.0",
+  "description": "Mirror Chrome/Edge tab groups into Karakeep lists or local TXT files, with a fast searchable New Tab dashboard. AR/EN, dark/light.",
+  "minimum_chrome_version": "104",
+  "permissions": [
+    "tabs",
+    "tabGroups",
+    "storage",
+    "alarms",
+    "favicon",
+    "search"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "src/background/sw.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "TabSync",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_page": "src/options/options.html",
+  "chrome_url_overrides": {
+    "newtab": "src/newtab/newtab.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

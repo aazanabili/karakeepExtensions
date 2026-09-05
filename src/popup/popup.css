@@ -1,0 +1,131 @@
+:root {
+  --bg: #f4f5fb;
+  --card: #ffffff;
+  --text: #1b1e28;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --accent: #6366f1;
+  --accent-soft: #eef0ff;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0f1117;
+  --card: #171a23;
+  --text: #e6e8ee;
+  --muted: #9aa0ad;
+  --border: #262b38;
+  --accent: #818cf8;
+  --accent-soft: #232741;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 320px;
+  margin: 0;
+  font-family: "Segoe UI", system-ui, -apple-system, Tahoma, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+header strong { flex: 1; }
+
+.pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.pill.ok { color: #188038; border-color: #18803844; }
+.pill.pending { color: #b07d00; border-color: #b07d0044; }
+.pill.error { color: #d33; border-color: #d3334444; }
+
+.row { padding: 10px 12px 0; }
+
+.status-row {
+  display: flex;
+  justify-content: space-between;
+}
+
+.muted { color: var(--muted); }
+
+.btns {
+  display: flex;
+  gap: 6px;
+}
+
+button {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+button:hover { background: var(--accent-soft); }
+button:disabled { opacity: 0.5; cursor: default; }
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  flex: 1;
+}
+
+#btn-dash { flex: 1; }
+button.icon { width: 34px; }
+
+.log { padding: 8px 12px 12px; }
+
+.log h2 {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 4px 0 6px;
+  font-weight: 600;
+}
+
+.log ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.log li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.log li:last-child { border-bottom: none; }
+
+.log .kind { font-weight: 600; }
+.log .kind.sync { color: #188038; }
+.log .kind.error { color: #d33; }
+.log .kind.restore { color: var(--accent); }
+.log .msg {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.log .when { color: var(--muted); white-space: nowrap; }

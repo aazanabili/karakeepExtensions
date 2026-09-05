@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TabSync — Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="panel">
+    <h1><img src="../../icons/icon48.png" alt="" width="26" height="26"> <span data-i18n="settings">Settings</span></h1>
+
+    <section>
+      <h2 data-i18n="driverLabel">Storage driver</h2>
+      <label class="radio"><input type="radio" name="driver" value="karakeep"> <span data-i18n="driverKarakeep">Karakeep server</span></label>
+      <label class="radio"><input type="radio" name="driver" value="local"> <span data-i18n="driverLocal">Local TXT folder</span></label>
+    </section>
+
+    <section id="fs-karakeep">
+      <div class="field">
+        <label for="server-url" data-i18n="serverUrlLabel">Server URL</label>
+        <input id="server-url" type="url" placeholder="https://karakeep.example.com" dir="ltr">
+      </div>
+      <div class="field">
+        <label for="api-key" data-i18n="apiKeyLabel">API key</label>
+        <input id="api-key" type="password" dir="ltr" autocomplete="off">
+      </div>
+      <button id="btn-test" data-i18n="testConnection">Test connection</button>
+      <span id="test-result" class="test-result"></span>
+    </section>
+
+    <section id="fs-local" hidden>
+      <button id="btn-folder" data-i18n="pickFolder">Choose folder</button>
+      <span id="folder-status" class="test-result"></span>
+      <p class="hint" data-i18n="folderNeeded"></p>
+    </section>
+
+    <section>
+      <div class="field">
+        <label for="delete-mode" data-i18n="deleteModeLabel">On tab close</label>
+        <select id="delete-mode">
+          <option value="archive" data-i18n="deleteArchive">Archive bookmarks</option>
+          <option value="delete" data-i18n="deleteHard">Delete permanently</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="non-name" data-i18n="nonListLabel">Ungrouped tabs list name</label>
+        <input id="non-name" type="text" value="non">
+      </div>
+    </section>
+
+    <section>
+      <div class="field">
+        <label for="theme" data-i18n="themeLabel">Theme</label>
+        <select id="theme">
+          <option value="auto" data-i18n="themeAuto">Auto</option>
+          <option value="light" data-i18n="themeLight">Light</option>
+          <option value="dark" data-i18n="themeDark">Dark</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="lang" data-i18n="langLabel">Language</label>
+        <select id="lang">
+          <option value="auto" data-i18n="langAuto">Auto (browser)</option>
+          <option value="ar">العربية</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+    </section>
+
+    <section>
+      <h2>Backup</h2>
+      <button id="btn-export" data-i18n="exportBtn">Export backup (JSON)</button>
+      <label class="import-label">
+        <span data-i18n="importBtn">Import backup</span>
+        <input id="import-file" type="file" accept="application/json" hidden>
+      </label>
+      <span id="import-result" class="test-result"></span>
+    </section>
+
+    <footer>
+      <button id="btn-save" class="primary" data-i18n="saveBtn">Save</button>
+      <span id="saved" class="test-result ok-text" hidden data-i18n="savedMsg">Saved</span>
+    </footer>
+  </main>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

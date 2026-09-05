@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="../../icons/icon48.png" alt="" width="22" height="22">
+    <strong data-i18n="appTitle">TabSync</strong>
+    <span id="state-pill" class="pill"></span>
+  </header>
+
+  <section class="row status-row">
+    <span class="muted" data-i18n="lastSync">Last sync</span>
+    <span id="last-sync">—</span>
+  </section>
+
+  <section class="row btns">
+    <button id="btn-sync" class="primary" data-i18n="syncNow">Sync now</button>
+    <button id="btn-dash" data-i18n="openDashboard">Open dashboard</button>
+    <button id="btn-settings" class="icon" title="Settings">&#9881;</button>
+  </section>
+
+  <section class="log">
+    <h2 data-i18n="activity">Activity log</h2>
+    <ul id="activity"></ul>
+    <p id="empty-log" class="muted" data-i18n="emptyLog" hidden>No activity yet</p>
+  </section>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
