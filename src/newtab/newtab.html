@@ -13,11 +13,6 @@
       <span data-i18n="appTitle">TabSync</span>
     </div>
 
-    <div class="search-wrap">
-      <input id="search" type="search" autocomplete="off" data-i18n-ph="searchPlaceholder" placeholder="Search lists and links…">
-      <div id="search-hint" class="search-hint" hidden></div>
-    </div>
-
     <div class="actions">
       <span id="status" class="status-pill" title=""></span>
       <button id="btn-refresh" class="icon-btn" data-i18n-title="refresh" title="Refresh">&#8635;</button>
@@ -28,6 +23,30 @@
     </div>
   </header>
 
+  <!-- Web search (primary) -->
+  <section class="web-search-section">
+    <div class="engine-tabs" id="engine-tabs"></div>
+    <div class="web-search-wrap">
+      <input id="web-search" type="search" autocomplete="off" data-i18n-ph="webSearchPlaceholder" placeholder="Search the web…">
+      <button id="btn-web-search" class="primary-btn" data-i18n="searchBtn">Search</button>
+    </div>
+  </section>
+
+  <!-- Quick Links -->
+  <section class="quick-links-section">
+    <div class="section-header">
+      <h2 data-i18n="quickLinks">Quick Links</h2>
+      <button id="btn-add-quick" class="icon-btn add-btn" title="+">+</button>
+    </div>
+    <div id="quick-links" class="quick-links-grid"></div>
+  </section>
+
+  <!-- Filter search (secondary) -->
+  <div class="filter-search-wrap">
+    <input id="filter-search" type="search" autocomplete="off" data-i18n-ph="filterPlaceholder" placeholder="Filter lists and links…">
+    <div id="search-hint" class="search-hint" hidden></div>
+  </div>
+
   <div id="banner" class="banner" hidden>
     <span id="banner-text"></span>
     <button id="banner-btn"></button>
@@ -37,6 +56,19 @@
 
   <div id="empty" class="empty" hidden>
     <p data-i18n="noLists">No lists yet. Create a tab group and it will appear here.</p>
+  </div>
+
+  <!-- Add Quick Link Modal -->
+  <div id="quick-modal" class="modal" hidden>
+    <div class="modal-content">
+      <h3 data-i18n="addQuickLink">Add Quick Link</h3>
+      <input id="quick-title" type="text" data-i18n-ph="linkTitle" placeholder="Title">
+      <input id="quick-url" type="url" dir="ltr" data-i18n-ph="linkUrl" placeholder="https://…">
+      <div class="modal-actions">
+        <button id="btn-quick-save" class="primary-btn" data-i18n="save">Save</button>
+        <button id="btn-quick-cancel" data-i18n="cancel">Cancel</button>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="newtab.js"></script>

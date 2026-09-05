@@ -136,6 +136,8 @@ export async function runSync(trigger = 'auto') {
   const settings = await S.getSettings();
   const state = await captureBrowserState();
   const meta = await S.getMeta();
+  const quickLinks = await S.getQuickLinks();
+  const quickLinksName = settings.quickLinksListName || 'QuickLinks';
 
   let stats = { added: 0, removed: 0 };
   let lists;
@@ -145,10 +147,20 @@ export async function runSync(trigger = 'auto') {
   } else {
     const driver = new KarakeepDriver(settings.serverUrl, settings.apiKey);
     stats = await mirrorWithKarakeep(driver, state, settings);
+
+    // Sync QuickLinks as protected list (append-only, never auto-remove)
+    if (quickLinks.length > 0) {
+      await syncQuickLinks(driver, quickLinksName, quickLinks);
+    }
+
     // Cache shows everything on the server: open lists (live) + archived ones.
     const allLists = await driver.getLists();
     lists = [];
     for (const l of allLists) {
+      if (l.name === quickLinksName) {
+        // QuickLinks list is rendered separately from local storage, not from server
+        continue;
+      }
       const open = state.get(l.name);
       if (open) {
         lists.push(toCacheList(l.name, open, meta, true));
@@ -171,10 +183,34 @@ export async function runSync(trigger = 'auto') {
   return { ok: true, ...stats };
 }
 
+/**
+ * Protected sync for QuickLinks: only adds missing links to server.
+ * Never removes links from server (even if removed locally — server is backup).
+ */
+async function syncQuickLinks(driver, listName, quickLinks) {
+  const allLists = await driver.getLists();
+  let list = allLists.find((l) => l.name === listName);
+
+  if (!list) {
+    list = await driver.createList(listName);
+  }
+
+  const current = await driver.getListBookmarks(list.id);
+  const currentUrls = new Set(current.map((b) => normalizeUrl(b.url) || b.url));
+
+  for (const link of quickLinks) {
+    const url = normalizeUrl(link.url);
+    if (!url || currentUrls.has(url)) continue;
+    const bm = await driver.createLink(url, link.title);
+    await driver.addToList(list.id, bm.id);
+  }
+}
+
 /** Pull fresh data from the active driver into the cache (for the New Tab page). */
 export async function refreshCache() {
   const settings = await S.getSettings();
   const meta = await S.getMeta();
+  const quickLinksName = settings.quickLinksListName || 'QuickLinks';
   let lists = [];
 
   if (settings.driver === 'local') {
@@ -195,6 +231,7 @@ export async function refreshCache() {
       openNames.add(settings.nonListName || 'non');
     } catch { /* tabGroups unavailable outside extension context */ }
     for (const l of all) {
+      if (l.name === quickLinksName) continue; // rendered separately
       const bms = await driver.getListBookmarks(l.id);
       lists.push({
         name: l.name,

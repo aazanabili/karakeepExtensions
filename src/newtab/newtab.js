@@ -1,25 +1,31 @@
-// New Tab dashboard: instant render from cache, silent background refresh, fuzzy search,
-// one-click session restore. Dark/light + AR/EN follow the shared settings.
+// New Tab dashboard: quick links, web search, list filtering, session restore.
+// Dark/light + AR/EN follow the shared settings.
 
-import { getSettings, getCache, saveSettings } from '../lib/settings.js';
+import { getSettings, getCache, saveSettings, getQuickLinks, setQuickLinks, getSearchEngine, setSearchEngine } from '../lib/settings.js';
 import { resolveLang, makeT, applyI18n, applyTheme, relTime } from '../lib/i18n.js';
 import { faviconUrl, hostOf, GROUP_COLORS } from '../lib/normalize.js';
+import { ENGINES, buildSearchUrl } from '../lib/engines.js';
 import { loadHandle, saveHandle, requestPerm } from '../lib/drivers/localfs.js';
 
 let settings;
 let cache;
+let quickLinks;
 let lang;
 let t;
-let query = '';
-let visibleLists = []; // filtered lists currently rendered
+let filterQuery = '';
+let visibleLists = [];
 
 const $ = (sel) => document.querySelector(sel);
 const grid = $('#grid');
 const emptyEl = $('#empty');
-const searchEl = $('#search');
+const filterSearchEl = $('#filter-search');
 const hintEl = $('#search-hint');
 const statusEl = $('#status');
 const bannerEl = $('#banner');
+const webSearchEl = $('#web-search');
+const engineTabsEl = $('#engine-tabs');
+const quickLinksEl = $('#quick-links');
+const quickModal = $('#quick-modal');
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
@@ -45,7 +51,111 @@ function send(msg) {
   return chrome.runtime.sendMessage(msg).catch(() => ({ ok: false }));
 }
 
-// ---- Rendering ---------------------------------------------------------------
+// ---- Web Search (Primary) -----------------------------------------------------
+
+async function renderEngines() {
+  const activeId = await getSearchEngine();
+  engineTabsEl.innerHTML = ENGINES.map((e) => `
+    <button class="engine-tab ${e.id === activeId ? 'active' : ''}" data-id="${e.id}">
+      <img src="${esc(e.icon)}" alt="" onerror="this.style.display='none'">
+      <span>${esc(e.name[lang] || e.name.en)}</span>
+    </button>
+  `).join('');
+}
+
+async function handleWebSearch() {
+  const query = webSearchEl.value.trim();
+  if (!query) return;
+  const engineId = await getSearchEngine();
+  const engine = ENGINES.find((e) => e.id === engineId) || ENGINES[0];
+  const url = buildSearchUrl(engine, query, lang);
+  chrome.tabs.create({ url, active: true });
+}
+
+engineTabsEl.addEventListener('click', async (e) => {
+  const tab = e.target.closest('.engine-tab');
+  if (!tab) return;
+  await setSearchEngine(tab.dataset.id);
+  renderEngines();
+});
+
+$('#btn-web-search').addEventListener('click', handleWebSearch);
+webSearchEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') handleWebSearch();
+});
+
+// ---- Quick Links ---------------------------------------------------------------
+
+async function renderQuickLinks() {
+  quickLinks = await getQuickLinks();
+  quickLinksEl.innerHTML = quickLinks.map((link, i) => `
+    <div class="quick-link-item" data-index="${i}" title="${esc(link.url)}">
+      <img src="${esc(faviconUrl(link.url))}" alt="" onerror="this.style.visibility='hidden'">
+      <span class="title">${esc(link.title || hostOf(link.url))}</span>
+      <button class="remove-btn" data-index="${i}">×</button>
+    </div>
+  `).join('');
+}
+
+async function addQuickLink(title, url) {
+  try {
+    url = new URL(url).href; // validate
+  } catch {
+    return false;
+  }
+  quickLinks.push({ id: crypto.randomUUID(), title: title || hostOf(url), url, createdAt: Date.now() });
+  await setQuickLinks(quickLinks);
+  await renderQuickLinks();
+  await send({ type: 'syncNow' }); // sync to server
+  return true;
+}
+
+async function removeQuickLink(index) {
+  quickLinks.splice(index, 1);
+  await setQuickLinks(quickLinks);
+  await renderQuickLinks();
+  // Note: we don't remove from server (protected list = append-only)
+}
+
+quickLinksEl.addEventListener('click', async (e) => {
+  const removeBtn = e.target.closest('.remove-btn');
+  if (removeBtn) {
+    e.stopPropagation();
+    await removeQuickLink(Number(removeBtn.dataset.index));
+    return;
+  }
+  const item = e.target.closest('.quick-link-item');
+  if (item) {
+    const link = quickLinks[Number(item.dataset.index)];
+    if (link) chrome.tabs.create({ url: link.url, active: true });
+  }
+});
+
+$('#btn-add-quick').addEventListener('click', () => {
+  $('#quick-title').value = '';
+  $('#quick-url').value = '';
+  quickModal.hidden = false;
+  $('#quick-url').focus();
+});
+
+$('#btn-quick-cancel').addEventListener('click', () => {
+  quickModal.hidden = true;
+});
+
+$('#btn-quick-save').addEventListener('click', async () => {
+  const title = $('#quick-title').value.trim();
+  const url = $('#quick-url').value.trim();
+  if (!url) return;
+  const ok = await addQuickLink(title, url);
+  if (ok) quickModal.hidden = true;
+});
+
+quickModal.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') quickModal.hidden = true;
+  if (e.key === 'Enter') $('#btn-quick-save').click();
+});
+
+// ---- List Filtering (Secondary) --------------------------------------------------
 
 function sortLists(lists) {
   const non = settings.nonListName || 'non';
@@ -57,20 +167,20 @@ function sortLists(lists) {
 }
 
 function filterLists(lists) {
-  if (!query.trim()) return lists.map((l) => ({ ...l, shownItems: l.items }));
+  if (!filterQuery.trim()) return lists.map((l) => ({ ...l, shownItems: l.items }));
   const out = [];
   for (const l of lists) {
-    if (fuzzy(query, l.name)) {
+    if (fuzzy(filterQuery, l.name)) {
       out.push({ ...l, shownItems: l.items });
       continue;
     }
-    const items = l.items.filter((i) => fuzzy(query, i.title) || fuzzy(query, i.url));
+    const items = l.items.filter((i) => fuzzy(filterQuery, i.title) || fuzzy(filterQuery, i.url));
     if (items.length) out.push({ ...l, shownItems: items });
   }
   return out;
 }
 
-function render() {
+function renderLists() {
   visibleLists = sortLists(filterLists(cache.lists || []));
 
   emptyEl.hidden = visibleLists.length > 0;
@@ -110,7 +220,7 @@ function render() {
 }
 
 function renderHint() {
-  if (!query.trim()) {
+  if (!filterQuery.trim()) {
     hintEl.hidden = true;
     return;
   }
@@ -122,6 +232,26 @@ function renderHint() {
     hintEl.hidden = true;
   }
 }
+
+filterSearchEl.addEventListener('input', () => {
+  filterQuery = filterSearchEl.value;
+  renderLists();
+});
+
+filterSearchEl.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const total = visibleLists.reduce((n, l) => n + l.shownItems.length, 0);
+  if (total === 0 && filterQuery.trim()) {
+    // No local results -> use web search with active engine
+    webSearchEl.value = filterQuery.trim();
+    handleWebSearch();
+  } else {
+    const first = grid.querySelector('.link-item');
+    if (first) chrome.tabs.create({ url: first.dataset.url, active: true });
+  }
+});
+
+// ---- Status & Banner ------------------------------------------------------------
 
 async function renderStatus() {
   const r = await send({ type: 'getState' });
@@ -140,8 +270,6 @@ async function renderStatus() {
     statusEl.title = `${t('lastSync')}: ${st.lastSync ? relTime(st.lastSync, lang) : t('never')}`;
   }
 }
-
-// ---- Banner (folder permission / not configured) ------------------------------
 
 function showBanner(text, btnText, onClick) {
   $('#banner-text').textContent = text;
@@ -175,7 +303,7 @@ async function checkReadiness() {
   }
 }
 
-// ---- Actions ------------------------------------------------------------------
+// ---- List Actions ------------------------------------------------------------
 
 grid.addEventListener('click', async (e) => {
   const linkEl = e.target.closest('.link-item');
@@ -201,41 +329,22 @@ grid.addEventListener('click', async (e) => {
   if (!res?.ok) console.warn('restore failed', res);
 });
 
-searchEl.addEventListener('input', () => {
-  query = searchEl.value;
-  render();
-});
-
-searchEl.addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter') return;
-  const total = visibleLists.reduce((n, l) => n + l.shownItems.length, 0);
-  if (total === 0 && query.trim()) {
-    // No local results -> hand off to the default search engine.
-    try {
-      chrome.search.query({ text: query.trim(), disposition: 'CURRENT_TAB' });
-    } catch {
-      window.location.href = 'https://www.google.com/search?q=' + encodeURIComponent(query.trim());
-    }
-  } else {
-    const first = grid.querySelector('.link-item');
-    if (first) chrome.tabs.create({ url: first.dataset.url, active: true });
-  }
-});
+// ---- Top Bar Actions --------------------------------------------------------
 
 $('#btn-refresh').addEventListener('click', async () => {
   await send({ type: 'refreshCache' });
   cache = await getCache();
-  render();
+  renderLists();
 });
 
 $('#btn-sync').addEventListener('click', async (e) => {
-  const syncBtn = e.currentTarget; // currentTarget is null after the first await
+  const syncBtn = e.currentTarget;
   syncBtn.disabled = true;
   statusEl.textContent = t('syncingNow');
   await send({ type: 'syncNow' });
   cache = await getCache();
   syncBtn.disabled = false;
-  render();
+  renderLists();
   renderStatus();
 });
 
@@ -250,7 +359,9 @@ $('#btn-lang').addEventListener('click', async () => {
   lang = resolveLang(settings);
   t = makeT(lang);
   applyI18n(document, t, lang);
-  render();
+  renderEngines();
+  renderQuickLinks();
+  renderLists();
   renderStatus();
 });
 
@@ -261,9 +372,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.cache) {
     cache = changes.cache.newValue || { lists: [], fetchedAt: 0 };
-    render();
+    renderLists();
   }
   if (changes.sync) renderStatus();
+  if (changes.quickLinks) renderQuickLinks();
 });
 
 // ---- Init ----------------------------------------------------------------------
@@ -275,8 +387,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   t = makeT(lang);
   applyTheme(settings.theme);
   applyI18n(document, t, lang);
-  render();          // zero-latency paint from cache
+  renderEngines();
+  renderQuickLinks();
+  renderLists();
   renderStatus();
-  checkReadiness();  // silent refresh / banners
-  searchEl.focus();
+  checkReadiness();
+  webSearchEl.focus();
 })();

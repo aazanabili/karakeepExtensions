@@ -9,7 +9,9 @@ export const K = {
   SYNC: 'sync',            // { dirty, lastSync, lastError, pendingSince }
   MANAGED: 'managedLists', // [listName] — only these server lists are ever touched (mirror safety)
   KNOWN_FILES: 'knownFiles', // [fileName] — TXT files we created (mirror-safe deletion)
-  PENDING_AT: 'pendingSyncAt'
+  PENDING_AT: 'pendingSyncAt',
+  QUICK_LINKS: 'quickLinks', // [{id, title, url, createdAt}] — local + synced as protected list
+  SEARCH_ENGINE: 'searchEngine' // id of default engine
 };
 
 export const DEFAULT_SETTINGS = {
@@ -19,7 +21,8 @@ export const DEFAULT_SETTINGS = {
   deleteMode: 'archive',     // 'archive' | 'delete'
   nonListName: 'non',
   theme: 'auto',             // 'auto' | 'light' | 'dark'
-  lang: 'auto'               // 'auto' | 'ar' | 'en'
+  lang: 'auto',              // 'auto' | 'ar' | 'en'
+  quickLinksListName: 'QuickLinks' // protected list name on server
 };
 
 const DEFAULT_SYNC = { dirty: false, lastSync: 0, lastError: '', pendingSince: 0 };
@@ -93,4 +96,22 @@ export async function getKnownFiles() {
 
 export async function setKnownFiles(names) {
   await chrome.storage.local.set({ [K.KNOWN_FILES]: names });
+}
+
+export async function getQuickLinks() {
+  const o = await chrome.storage.local.get(K.QUICK_LINKS);
+  return o[K.QUICK_LINKS] || [];
+}
+
+export async function setQuickLinks(links) {
+  await chrome.storage.local.set({ [K.QUICK_LINKS]: links });
+}
+
+export async function getSearchEngine() {
+  const o = await chrome.storage.local.get(K.SEARCH_ENGINE);
+  return o[K.SEARCH_ENGINE] || 'google';
+}
+
+export async function setSearchEngine(id) {
+  await chrome.storage.local.set({ [K.SEARCH_ENGINE]: id });
 }

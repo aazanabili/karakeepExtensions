@@ -59,7 +59,16 @@ const STR = {
     errorGeneric: 'Error',
     grantRetry: 'Grant access',
     liveBadge: 'Open now',
-    archivedBadge: 'Archived'
+    archivedBadge: 'Archived',
+    webSearchPlaceholder: 'Search the web…',
+    filterPlaceholder: 'Filter lists…',
+    searchBtn: 'Search',
+    quickLinks: 'Quick Links',
+    addQuickLink: 'Add Quick Link',
+    linkTitle: 'Title (optional)',
+    linkUrl: 'URL',
+    save: 'Save',
+    cancel: 'Cancel'
   },
   ar: {
     appTitle: 'TabSync',
@@ -119,7 +128,16 @@ const STR = {
     errorGeneric: 'خطأ',
     grantRetry: 'منح الصلاحية',
     liveBadge: 'مفتوح الآن',
-    archivedBadge: 'محفوظ'
+    archivedBadge: 'محفوظ',
+    webSearchPlaceholder: 'ابحث في الويب…',
+    filterPlaceholder: 'تصفية القوائم…',
+    searchBtn: 'بحث',
+    quickLinks: 'روابط سريعة',
+    addQuickLink: 'إضافة رابط سريع',
+    linkTitle: 'العنوان (اختياري)',
+    linkUrl: 'الرابط',
+    save: 'حفظ',
+    cancel: 'إلغاء'
   }
 };
 
