@@ -1,10 +1,10 @@
-// Sync engine: capture browser state -> full one-way mirror onto the active driver.
-// Mirror safety: only lists/files we manage are ever emptied or deleted.
+// Quick Links storage, dashboard cache, and manual list restoration.
 
-import { normalizeUrl, isSyncableUrl } from '../lib/normalize.js';
+import { normalizeUrl } from '../lib/normalize.js';
 import * as S from '../lib/settings.js';
 import { KarakeepDriver } from '../lib/drivers/karakeep.js';
 import * as LocalFS from '../lib/drivers/localfs.js';
+import { captureBrowserSession, parseSessionDescription } from './session.js';
 import {
   applyQuickLinkOperation,
   normalizeQuickLinks,
@@ -12,182 +12,6 @@ import {
   quickLinksEqual,
   stripOrderPrefix
 } from '../lib/quick-links.js';
-
-/**
- * Snapshot current browser state as Map<listName, {color, items:[{url,title,index}]}>.
- * - Tab groups (titled) become lists named after the group; same name across windows merges.
- * - Everything else (ungrouped, pinned, unnamed groups) lands in the `non` list.
- * - Non http(s) URLs (chrome://, edge://, about:, extension pages) are excluded.
- */
-export async function captureBrowserState() {
-  const settings = await S.getSettings();
-  const non = settings.nonListName || 'non';
-  const quickLinksName = settings.quickLinksListName || 'QuickLinks';
-  const [tabs, groups] = await Promise.all([
-    chrome.tabs.query({}),
-    chrome.tabGroups.query({})
-  ]);
-  const groupById = new Map(groups.map((g) => [g.id, g]));
-  const meta = await S.getMeta();
-  let metaChanged = false;
-
-  const map = new Map();
-  for (const tab of tabs) {
-    if (!tab.url || !isSyncableUrl(tab.url)) continue;
-    const url = normalizeUrl(tab.url);
-    if (!url) continue;
-    const group = (tab.groupId != null && tab.groupId !== -1) ? groupById.get(tab.groupId) : null;
-    const rawName = group?.title ? group.title : non;
-    // QuickLinks is reserved for manually managed links; keep tab groups separate.
-    const name = rawName === quickLinksName ? `${rawName} (Tabs)` : rawName;
-    if (group?.title && meta[group.title]?.color !== group.color) {
-      meta[group.title] = { color: group.color || '' };
-      metaChanged = true;
-    }
-    if (!map.has(name)) map.set(name, { color: group?.color || meta[name]?.color || '', items: [] });
-    map.get(name).items.push({ url, title: tab.title || url, index: tab.index ?? 0 });
-  }
-
-  for (const list of map.values()) {
-    list.items.sort((a, b) => a.index - b.index);
-    const seen = new Set();
-    list.items = list.items.filter((i) => (seen.has(i.url) ? false : (seen.add(i.url), true)));
-  }
-
-  if (metaChanged) await S.setMeta(meta);
-  return map;
-}
-
-/**
- * Mirror ONLY the currently-open lists onto Karakeep.
- * Lists we never managed and lists that disappeared from the browser are untouched
- * (they stay on the server as an archive visible in the dashboard).
- * Returns {added, removed}.
- */
-async function mirrorWithKarakeep(driver, state, settings) {
-  // Preflight: without host permission the SW fetch fails with a cryptic network error.
-  try {
-    const origin = new URL(settings.serverUrl).origin + '/*';
-    const has = await chrome.permissions.contains({ origins: [origin] });
-    if (!has) throw new Error('MISSING_HOST_PERMISSION: افتح الإعدادات واضغط حفظ لمنح صلاحية النطاق');
-  } catch (e) {
-    if (e.message.startsWith('MISSING_HOST_PERMISSION')) throw e;
-  }
-
-  const managed = new Set(await S.getManaged());
-  const allLists = await driver.getLists();
-  const byName = new Map(allLists.map((l) => [l.name, l]));
-
-  let added = 0;
-  let removed = 0;
-
-  for (const [name, data] of state) {
-    if (!data.items.length && !managed.has(name)) continue; // empty + never managed -> skip
-
-    let list = byName.get(name);
-    if (!list) {
-      list = await driver.createList(name);
-    }
-
-    const current = await driver.getListBookmarks(list.id);
-    const currentByKey = new Map();
-    for (const b of current) {
-      const key = normalizeUrl(b.url) || b.url;
-      if (!currentByKey.has(key)) currentByKey.set(key, b);
-    }
-    const desiredByKey = new Map(data.items.map((i) => [i.url, i])); // already normalized
-
-    for (const [key, item] of desiredByKey) {
-      if (currentByKey.has(key)) continue;
-      const bm = await driver.createLink(item.url, item.title);
-      await driver.addToList(list.id, bm.id);
-      added++;
-    }
-
-    for (const [key, bm] of currentByKey) {
-      if (desiredByKey.has(key)) continue;
-      await driver.removeFromList(list.id, bm.id);
-      if (settings.deleteMode === 'delete') {
-        await driver.deleteBookmark(bm.id);
-      } else {
-        await driver.archiveBookmark(bm.id);
-      }
-      removed++;
-    }
-  }
-
-  await S.setManaged([...new Set([...managed, ...state.keys()])]);
-  return { added, removed };
-}
-
-/** Mirror the desired state into the local TXT folder. */
-async function mirrorWithLocal(state) {
-  const handle = await LocalFS.loadHandle();
-  if (!handle) throw new Error('NO_FOLDER');
-  if (await LocalFS.queryPerm(handle) !== 'granted') throw new Error('NEED_PERMISSION');
-  const known = await S.getKnownFiles();
-  const written = await LocalFS.writeMirror(handle, state, known);
-  await S.setKnownFiles(written);
-  return { added: -1, removed: -1 }; // local mode has no per-op stats
-}
-
-function toCacheList(name, list, meta, live) {
-  return {
-    name,
-    color: list.color || meta[name]?.color || '',
-    items: list.items.map(({ url, title }) => ({ url, title })),
-    updatedAt: Date.now(),
-    live
-  };
-}
-
-/** Full mirror sync: capture -> mirror open lists -> cache = open + archived lists. */
-export async function runSync(trigger = 'auto') {
-  const settings = await S.getSettings();
-  const state = await captureBrowserState();
-  const meta = await S.getMeta();
-  const quickLinksName = settings.quickLinksListName || 'QuickLinks';
-
-  let stats = { added: 0, removed: 0 };
-  let lists;
-  if (settings.driver === 'local') {
-    stats = await mirrorWithLocal(state);
-    await refreshQuickLinksFromStorage(settings);
-    lists = [...state].map(([name, l]) => toCacheList(name, l, meta, true));
-  } else {
-    const driver = new KarakeepDriver(settings.serverUrl, settings.apiKey);
-    stats = await mirrorWithKarakeep(driver, state, settings);
-    await refreshQuickLinksFromStorage(settings);
-
-    // Cache shows everything on the server: open lists (live) + archived ones.
-    const allLists = await driver.getLists();
-    lists = [];
-    for (const l of allLists) {
-      if (l.name === quickLinksName) {
-        // QuickLinks list is rendered separately from local storage, not from server
-        continue;
-      }
-      const open = state.get(l.name);
-      if (open) {
-        lists.push(toCacheList(l.name, open, meta, true));
-      } else {
-        const bms = await driver.getListBookmarks(l.id);
-        lists.push({
-          name: l.name,
-          color: meta[l.name]?.color || '',
-          items: bms.map((b) => ({ url: normalizeUrl(b.url) || b.url, title: b.title })),
-          updatedAt: Date.now(),
-          live: false
-        });
-      }
-    }
-  }
-
-  await S.saveCache({ driver: settings.driver, fetchedAt: Date.now(), lists });
-  await S.setSyncState({ dirty: false, lastSync: Date.now(), lastError: '', pendingSince: 0 });
-  await S.logActivity('sync', `${trigger}: +${stats.added}/-${stats.removed}`);
-  return { ok: true, ...stats };
-}
 
 function hydrateRemoteLinks(remote, local) {
   const localByUrl = new Map(normalizeQuickLinks(local).map((link) => [link.url, link]));
@@ -353,6 +177,8 @@ export async function refreshCache() {
   const settings = await S.getSettings();
   const meta = await S.getMeta();
   const quickLinksName = settings.quickLinksListName || 'QuickLinks';
+  const browserState = await captureBrowserSession();
+  const liveNames = new Set(browserState.lists.map((list) => list.name));
   let lists = [];
 
   if (settings.driver === 'local') {
@@ -360,33 +186,60 @@ export async function refreshCache() {
     if (!handle) return { ok: false, reason: 'NO_FOLDER' };
     if (await LocalFS.queryPerm(handle) !== 'granted') return { ok: false, reason: 'NEED_PERMISSION' };
     const raw = await LocalFS.readAllLists(handle);
-    lists = raw
-      .filter((l) => l.name !== quickLinksName)
-      .map((l) => ({ name: l.name, items: l.items, updatedAt: l.updatedAt, live: true }));
+    const rawByFile = new Map(raw.map((list) => [`${list.name}.txt`.toLowerCase(), list]));
+    let manifest = null;
+    try {
+      const text = await LocalFS.readText(handle, '_TabSyncSession.txt');
+      manifest = text ? JSON.parse(text) : null;
+    } catch { /* fall back to legacy files */ }
+    lists = Array.isArray(manifest?.lists)
+      ? manifest.lists
+        .filter((entry) => typeof entry.name === 'string' && typeof entry.fileName === 'string')
+        .map((entry) => {
+          const file = rawByFile.get(entry.fileName.toLowerCase());
+          return {
+            name: entry.name,
+            color: entry.color || '',
+            items: file?.items || [],
+            updatedAt: file?.updatedAt || Date.now(),
+            live: liveNames.has(entry.name)
+          };
+        })
+      : raw
+        .filter((list) => list.name !== quickLinksName && list.name !== 'Archive' && !list.name.startsWith('_'))
+        .map((list) => ({ ...list, live: liveNames.has(list.name) }));
   } else {
     if (!settings.serverUrl || !settings.apiKey) return { ok: false, reason: 'NOT_CONFIGURED' };
     const driver = new KarakeepDriver(settings.serverUrl, settings.apiKey);
     const all = await driver.getLists();
-    // Mark which lists are currently open in the browser.
-    let openNames = new Set();
-    try {
-      const groups = await chrome.tabGroups.query({});
-      openNames = new Set(groups.filter((g) => g.title).map((g) => g.title));
-      openNames.add(settings.nonListName || 'non');
-    } catch { /* tabGroups unavailable outside extension context */ }
     for (const l of all) {
       if (l.name === quickLinksName) continue; // rendered separately
+      const metadata = parseSessionDescription(l.description);
+      if (!metadata) continue;
       const bms = await driver.getListBookmarks(l.id);
+      const orderById = new Map(metadata.order.map((id, index) => [id, index]));
+      const ordered = bms
+        .map((bookmark, sourceIndex) => {
+          const parsed = stripOrderPrefix(bookmark.title);
+          return {
+            ...bookmark,
+            title: parsed.title,
+            order: orderById.has(bookmark.id) ? orderById.get(bookmark.id) : parsed.order,
+            sourceIndex
+          };
+        })
+        .sort((a, b) => a.order - b.order || a.sourceIndex - b.sourceIndex);
       lists.push({
         name: l.name,
-        items: bms.map((b) => ({ url: normalizeUrl(b.url) || b.url, title: b.title })),
+        color: metadata.color,
+        items: ordered.map((b) => ({ url: normalizeUrl(b.url) || b.url, title: b.title })),
         updatedAt: Date.now(),
-        live: openNames.has(l.name)
+        live: liveNames.has(l.name)
       });
     }
   }
 
-  lists = lists.map((l) => ({ ...l, color: meta[l.name]?.color || '' }));
+  lists = lists.map((l) => ({ ...l, color: l.color || meta[l.name]?.color || '' }));
   await S.saveCache({ lists, fetchedAt: Date.now(), driver: settings.driver });
   await refreshQuickLinksFromStorage(settings);
   return { ok: true, count: lists.length };

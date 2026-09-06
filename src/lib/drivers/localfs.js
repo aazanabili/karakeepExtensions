@@ -168,3 +168,38 @@ export async function writeQuickLinks(handle, fileName, links) {
   await writable.write(lines.join('\n') + (lines.length ? '\n' : ''));
   await writable.close();
 }
+
+export async function readText(handle, fileName) {
+  try {
+    const fh = await handle.getFileHandle(fileName);
+    return await (await fh.getFile()).text();
+  } catch (e) {
+    if (e?.name === 'NotFoundError') return null;
+    throw e;
+  }
+}
+
+export async function writeText(handle, fileName, text) {
+  const fh = await handle.getFileHandle(fileName, { create: true });
+  const writable = await fh.createWritable();
+  await writable.write(text);
+  await writable.close();
+}
+
+export async function removeFile(handle, fileName) {
+  try { await handle.removeEntry(fileName); } catch (e) {
+    if (e?.name !== 'NotFoundError') throw e;
+  }
+}
+
+export async function appendArchive(handle, entries) {
+  if (!entries.length) return;
+  const previous = await readText(handle, 'Archive.txt') || '';
+  const lines = entries.map((entry) => [
+    new Date(entry.removedAt).toISOString(),
+    String(entry.group || '').replace(/[\t\r\n]+/g, ' '),
+    String(entry.title || '').replace(/[\t\r\n]+/g, ' '),
+    entry.url
+  ].join('\t'));
+  await writeText(handle, 'Archive.txt', previous + lines.join('\n') + '\n');
+}

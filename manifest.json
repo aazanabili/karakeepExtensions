@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "TabSync Dashboard",
   "version": "0.1.0",
-  "description": "Mirror Chrome/Edge tab groups into Karakeep lists or local TXT files, with a fast searchable New Tab dashboard. AR/EN, dark/light.",
+  "description": "Synchronize Chrome/Edge tab groups with Karakeep lists or local TXT files, with a searchable New Tab dashboard. AR/EN, dark/light.",
   "minimum_chrome_version": "104",
   "permissions": [
     "tabs",

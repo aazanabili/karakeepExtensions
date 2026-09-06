@@ -26,7 +26,6 @@ async function load() {
   document.querySelector(`input[name="driver"][value="${s.driver}"]`).checked = true;
   $('#server-url').value = s.serverUrl;
   $('#api-key').value = s.apiKey;
-  $('#delete-mode').value = s.deleteMode;
   $('#non-name').value = s.nonListName;
   $('#theme').value = s.theme;
   $('#lang').value = s.lang;
@@ -55,7 +54,6 @@ async function save() {
     driver,
     serverUrl,
     apiKey: $('#api-key').value.trim(),
-    deleteMode: $('#delete-mode').value,
     nonListName: $('#non-name').value.trim() || 'non',
     theme: $('#theme').value,
     lang: $('#lang').value
@@ -125,14 +123,6 @@ $('#btn-folder').addEventListener('click', async () => {
   } catch {
     // user cancelled
   }
-});
-
-// Open chrome://extensions page for THIS extension so user can grant permanent
-// file access manually (the only reliable persistent method for extensions).
-$('#btn-ext-settings').addEventListener('click', async () => {
-  const isEdge = navigator.userAgent.includes('Edg/');
-  const url = (isEdge ? 'edge://extensions/' : 'chrome://extensions/') + '?id=' + chrome.runtime.id;
-  await chrome.tabs.create({ url });
 });
 
 // ---- Backup (export / import) -----------------------------------------------------

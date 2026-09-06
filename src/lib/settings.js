@@ -12,14 +12,14 @@ export const K = {
   PENDING_AT: 'pendingSyncAt',
   QUICK_LINKS: 'quickLinks', // [{id, title, url, createdAt}] — local + synced as protected list
   SEARCH_ENGINE: 'searchEngine', // id of default engine
-  QUICK_LINKS_MIGRATED: 'quickLinksMigrated'
+  QUICK_LINKS_MIGRATED: 'quickLinksMigrated',
+  SESSION_SNAPSHOT: 'sessionSnapshot'
 };
 
 export const DEFAULT_SETTINGS = {
   driver: 'karakeep',        // 'karakeep' | 'local'
   serverUrl: '',
   apiKey: '',
-  deleteMode: 'archive',     // 'archive' | 'delete'
   nonListName: 'non',
   theme: 'auto',             // 'auto' | 'light' | 'dark'
   lang: 'auto',              // 'auto' | 'ar' | 'en'
@@ -117,6 +117,15 @@ export async function markQuickLinksMigrated(storageId) {
   const migrated = new Set(await getQuickLinksMigrations());
   migrated.add(storageId);
   await chrome.storage.local.set({ [K.QUICK_LINKS_MIGRATED]: [...migrated] });
+}
+
+export async function getSessionSnapshot() {
+  const o = await chrome.storage.local.get(K.SESSION_SNAPSHOT);
+  return o[K.SESSION_SNAPSHOT] || null;
+}
+
+export async function setSessionSnapshot(snapshot) {
+  await chrome.storage.local.set({ [K.SESSION_SNAPSHOT]: snapshot });
 }
 
 export async function getSearchEngine() {

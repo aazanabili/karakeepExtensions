@@ -58,9 +58,9 @@ export class KarakeepDriver {
   }
 
   /** Create a list (API requires `name` + `icon`); on conflict, fall back to the existing one. */
-  async createList(name) {
+  async createList(name, extra = {}) {
     try {
-      return await this.req('/lists', { method: 'POST', body: { name, icon: '📚' } });
+      return await this.req('/lists', { method: 'POST', body: { name, icon: '📚', ...extra } });
     } catch (e) {
       if (e.status === 400 || e.status === 409) {
         const existing = (await this.getLists()).find((l) => l.name === name);
@@ -70,11 +70,24 @@ export class KarakeepDriver {
     }
   }
 
+  updateList(listId, patch) {
+    return this.req(`/lists/${encodeURIComponent(listId)}`, { method: 'PATCH', body: patch });
+  }
+
+  deleteList(listId) {
+    return this.req(`/lists/${encodeURIComponent(listId)}`, { method: 'DELETE' });
+  }
+
   /** All bookmarks inside a list: [{id, url, title}] */
   async getListBookmarks(listId) {
     const bms = await this.collect(`/lists/${encodeURIComponent(listId)}/bookmarks`, 'bookmarks');
     return bms
-      .map((b) => ({ id: b.id, url: b?.content?.url || '', title: b.title || '' }))
+      .map((b) => ({
+        id: b.id,
+        url: b?.content?.url || '',
+        title: b.title || '',
+        archived: !!b.archived
+      }))
       .filter((b) => b.url);
   }
 

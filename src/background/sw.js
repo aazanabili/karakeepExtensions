@@ -1,6 +1,7 @@
 // Service worker (MV3, ES modules): event debouncing, offline retry, badge, message bus.
 
-import { runSync, refreshCache, restoreList, mutateQuickLinks } from './sync.js';
+import { refreshCache, restoreList, mutateQuickLinks } from './sync.js';
+import { synchronizeSession } from './session.js';
 import * as S from '../lib/settings.js';
 
 const DEBOUNCE_MS = 2500;
@@ -9,7 +10,9 @@ const RESTORE_LOCK_MS = 30000;
 
 let debounceTimer = null;
 let restoringNow = false; // in-memory fast path
+let startupPending = false;
 let quickLinkQueue = Promise.resolve();
+let sessionQueue = Promise.resolve();
 
 function queueQuickLinkOperation(op) {
   const result = quickLinkQueue.then(() => mutateQuickLinks(op));
@@ -17,8 +20,14 @@ function queueQuickLinkOperation(op) {
   return result;
 }
 
+function queueSessionSync(trigger, forceRestore = false) {
+  const result = sessionQueue.then(() => synchronizeSession(trigger, forceRestore));
+  sessionQueue = result.catch(() => {});
+  return result;
+}
+
 async function isRestoring() {
-  if (restoringNow) return true;
+  if (restoringNow || startupPending) return true;
   const o = await chrome.storage.local.get(RESTORE_FLAG_KEY);
   return !!(o[RESTORE_FLAG_KEY] && o[RESTORE_FLAG_KEY].until > Date.now());
 }
@@ -31,9 +40,12 @@ function scheduleSync(reason) {
 }
 
 async function doSync(reason) {
-  if (await isRestoring()) return; // frozen while a session restore is in flight
+  if (await isRestoring()) {
+    setTimeout(() => scheduleSync('post-reconcile'), 5500);
+    return;
+  }
   try {
-    await runSync(reason);
+    await queueSessionSync(reason);
     chrome.alarms.clear('retry').catch(() => {});
   } catch (e) {
     await scheduleRetry(String(e?.message || e));
@@ -85,7 +97,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   const st = await S.getSyncState();
   if (!st.dirty) { chrome.alarms.clear('retry').catch(() => {}); return; }
   try {
-    await runSync('retry');
+    await queueSessionSync('retry');
     chrome.alarms.clear('retry').catch(() => {});
   } catch {
     chrome.alarms.create('retry', { delayInMinutes: 5 }); // backoff
@@ -101,7 +113,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case 'syncNow': {
         if (await isRestoring()) return { ok: false, error: 'RESTORING' };
         try {
-          await runSync('manual');
+          await queueSessionSync('manual');
+          await refreshCache();
           await updateBadge();
           return { ok: true };
         } catch (e) {
@@ -136,6 +149,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           cache: await S.getCache()
         };
       case 'settingsChanged':
+        await chrome.storage.local.remove(S.K.SESSION_SNAPSHOT);
         scheduleSync('settings');
         return { ok: true };
       default:
@@ -158,8 +172,16 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  const o = await chrome.storage.local.get(S.K.PENDING_AT);
-  if (o[S.K.PENDING_AT]) scheduleSync('resume');
+  // Wait for Chromium's own session restoration, then make it match central storage.
+  startupPending = true;
+  setTimeout(async () => {
+    try { await queueSessionSync('startup', true); } catch (e) {
+      await scheduleRetry(String(e?.message || e));
+    } finally {
+      startupPending = false;
+    }
+    await updateBadge();
+  }, 3500);
   await updateBadge();
 });
 
