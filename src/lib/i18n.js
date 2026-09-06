@@ -77,8 +77,7 @@ const STR = {
     dragToReorder: 'Drag to reorder',
     collapse: 'Collapse',
     expand: 'Expand',
-    moveLeft: 'Move group left',
-    moveRight: 'Move group right',
+    moveGroup: 'Drag to move group',
     quickConflict: 'Your action was cancelled because storage had a newer version. The latest stored links were loaded.',
     quickOperationFailed: 'The quick-link operation failed.'
   },
@@ -158,8 +157,7 @@ const STR = {
     dragToReorder: 'اسحب لإعادة الترتيب',
     collapse: 'طي',
     expand: 'فتح',
-    moveLeft: 'نقل المجموعة لليسار',
-    moveRight: 'نقل المجموعة لليمين',
+    moveGroup: 'اسحب لنقل المجموعة',
     quickConflict: 'أُلغيت العملية لأن نظام التخزين يحتوي نسخة أحدث. تم تحميل آخر نسخة محفوظة.',
     quickOperationFailed: 'فشلت عملية الرابط السريع.'
   }
