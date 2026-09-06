@@ -89,15 +89,16 @@ webSearchEl.addEventListener('keydown', (e) => {
 async function renderQuickLinks() {
   quickLinks = await getQuickLinks();
   quickLinksEl.innerHTML = quickLinks.map((link, i) => `
-    <div class="quick-link-item" data-index="${i}" title="${esc(link.url)}">
-      <img src="${esc(faviconUrl(link.url))}" alt="" onerror="this.style.visibility='hidden'">
+    <div class="quick-link-item" draggable="true" data-index="${i}" title="${esc(link.url)}">
+      <img draggable="false" src="${esc(faviconUrl(link.url))}" alt="" onerror="this.style.visibility='hidden'">
       <span class="title">${esc(link.title || hostOf(link.url))}</span>
-      <button class="remove-btn" data-index="${i}">×</button>
+      <button class="edit-btn" data-index="${i}" title="${esc(t('edit'))}">✎</button>
+      <button class="remove-btn" data-index="${i}" title="${esc(t('remove'))}">×</button>
     </div>
   `).join('');
 }
 
-async function addQuickLink(title, url) {
+async function saveQuickLink(title, url) {
   // Add protocol if missing
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
   try {
@@ -106,11 +107,16 @@ async function addQuickLink(title, url) {
     return false;
   }
   const links = await getQuickLinks();
-  links.push({ id: crypto.randomUUID(), title: title || hostOf(url), url, createdAt: Date.now() });
+  if (editingIndex >= 0 && links[editingIndex]) {
+    // Edit in place: keep id + createdAt
+    links[editingIndex] = { ...links[editingIndex], title: title || hostOf(url), url };
+  } else {
+    links.push({ id: crypto.randomUUID(), title: title || hostOf(url), url, createdAt: Date.now() });
+  }
   await setQuickLinks(links);
   quickLinks = links;
   await renderQuickLinks();
-  send({ type: 'syncNow' }).catch(() => {}); // background sync, don't block
+  send({ type: 'syncNow' }).catch(() => {}); // new URL is appended to server on next sync
   return true;
 }
 
@@ -128,6 +134,12 @@ quickLinksEl.addEventListener('click', async (e) => {
     await removeQuickLink(Number(removeBtn.dataset.index));
     return;
   }
+  const editBtn = e.target.closest('.edit-btn');
+  if (editBtn) {
+    e.stopPropagation();
+    openQuickModal(Number(editBtn.dataset.index));
+    return;
+  }
   const item = e.target.closest('.quick-link-item');
   if (item) {
     const link = quickLinks[Number(item.dataset.index)];
@@ -135,18 +147,102 @@ quickLinksEl.addEventListener('click', async (e) => {
   }
 });
 
-function openQuickModal() {
-  $('#quick-title').value = '';
-  $('#quick-url').value = '';
+// ---- Quick Links: drag & drop reorder -----------------------------------------
+
+let dragIndex = -1;
+
+function clearDropIndicators() {
+  quickLinksEl.querySelectorAll('.drop-before,.drop-after')
+    .forEach((el) => el.classList.remove('drop-before', 'drop-after'));
+}
+
+/** Nearest item to the cursor + whether to insert before/after it (RTL-aware). */
+function dropTargetAt(clientX, clientY) {
+  const items = [...quickLinksEl.querySelectorAll('.quick-link-item:not(.dragging)')];
+  if (!items.length) return null;
+  const rtl = getComputedStyle(quickLinksEl).direction === 'rtl';
+  let best = null;
+  let bestDist = Infinity;
+  for (const el of items) {
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const d = (cx - clientX) ** 2 + (cy - clientY) ** 2;
+    if (d < bestDist) { bestDist = d; best = { el, mid: cx }; }
+  }
+  const before = rtl ? clientX > best.mid : clientX < best.mid;
+  return { el: best.el, index: Number(best.el.dataset.index), before };
+}
+
+quickLinksEl.addEventListener('dragstart', (e) => {
+  if (e.target.closest('button')) { e.preventDefault(); return; }
+  const item = e.target.closest('.quick-link-item');
+  if (!item) return;
+  dragIndex = Number(item.dataset.index);
+  item.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  try { e.dataTransfer.setData('text/plain', String(dragIndex)); } catch { /* not required */ }
+});
+
+quickLinksEl.addEventListener('dragover', (e) => {
+  if (dragIndex < 0) return;
+  e.preventDefault(); // allow drop
+  e.dataTransfer.dropEffect = 'move';
+  clearDropIndicators();
+  const target = dropTargetAt(e.clientX, e.clientY);
+  if (target) target.el.classList.add(target.before ? 'drop-before' : 'drop-after');
+});
+
+quickLinksEl.addEventListener('drop', async (e) => {
+  if (dragIndex < 0) return;
+  e.preventDefault();
+  const target = dropTargetAt(e.clientX, e.clientY);
+  clearDropIndicators();
+  const from = dragIndex;
+  dragIndex = -1;
+  if (!target) return;
+  const links = await getQuickLinks();
+  if (from >= links.length) return;
+  const [moved] = links.splice(from, 1);
+  let insertAt = target.index + (target.before ? 0 : 1);
+  if (from < insertAt) insertAt--; // adjust for the removal shift
+  links.splice(Math.max(0, Math.min(insertAt, links.length)), 0, moved);
+  await setQuickLinks(links);
+  quickLinks = links;
+  await renderQuickLinks();
+});
+
+quickLinksEl.addEventListener('dragend', () => {
+  dragIndex = -1;
+  clearDropIndicators();
+  quickLinksEl.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging'));
+});
+
+// ---- Quick Links: add / edit modal -------------------------------------------
+
+let editingIndex = -1; // -1 = add mode
+
+function openQuickModal(index = -1) {
+  editingIndex = index;
+  $('#quick-modal-title').textContent = index >= 0 ? t('editQuickLink') : t('addQuickLink');
+  if (index >= 0 && quickLinks[index]) {
+    $('#quick-title').value = quickLinks[index].title || '';
+    $('#quick-url').value = quickLinks[index].url;
+  } else {
+    $('#quick-title').value = '';
+    $('#quick-url').value = '';
+  }
+  $('#quick-url').style.borderColor = '';
   quickModal.hidden = false;
-  setTimeout(() => $('#quick-url').focus(), 50);
+  setTimeout(() => (index >= 0 ? $('#quick-title') : $('#quick-url')).focus(), 50);
 }
 
 function closeQuickModal() {
   quickModal.hidden = true;
+  editingIndex = -1;
 }
 
-$('#btn-add-quick').addEventListener('click', openQuickModal);
+$('#btn-add-quick').addEventListener('click', () => openQuickModal(-1));
 
 $('#btn-quick-cancel').addEventListener('click', (e) => {
   e.preventDefault();
@@ -166,7 +262,7 @@ $('#btn-quick-save').addEventListener('click', async (e) => {
   const saveBtn = e.currentTarget;
   saveBtn.disabled = true;
   try {
-    const ok = await addQuickLink(title, url);
+    const ok = await saveQuickLink(title, url);
     if (ok) {
       closeQuickModal();
     } else {

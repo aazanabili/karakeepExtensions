@@ -206,10 +206,24 @@ body {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 999px;
-  cursor: pointer;
+  cursor: grab;
   transition: all 0.15s;
   position: relative;
+  user-select: none;
 }
+
+.quick-link-item:active { cursor: grabbing; }
+
+.quick-link-item.dragging {
+  opacity: 0.35;
+  cursor: grabbing;
+}
+
+/* Drop indicator: accent bar on the side where the dragged item will land */
+.quick-link-item.drop-before { box-shadow: inset 3px 0 0 var(--accent); }
+.quick-link-item.drop-after { box-shadow: inset -3px 0 0 var(--accent); }
+:dir(rtl) .quick-link-item.drop-before { box-shadow: inset -3px 0 0 var(--accent); }
+:dir(rtl) .quick-link-item.drop-after { box-shadow: inset 3px 0 0 var(--accent); }
 
 .quick-link-item:hover {
   background: var(--accent-soft);
@@ -230,16 +244,17 @@ body {
   white-space: nowrap;
 }
 
-.quick-link-item .remove-btn {
+.quick-link-item .remove-btn,
+.quick-link-item .edit-btn {
   position: absolute;
-  top: -6px;
   inset-inline-end: -6px;
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: var(--danger);
   color: #fff;
   font-size: 11px;
+  line-height: 1;
+  padding: 0;
   border: none;
   cursor: pointer;
   opacity: 0;
@@ -249,7 +264,19 @@ body {
   justify-content: center;
 }
 
-.quick-link-item:hover .remove-btn {
+.quick-link-item .remove-btn {
+  top: -6px;
+  background: var(--danger);
+}
+
+.quick-link-item .edit-btn {
+  bottom: -6px;
+  background: var(--accent);
+  font-size: 10px;
+}
+
+.quick-link-item:hover .remove-btn,
+.quick-link-item:hover .edit-btn {
   opacity: 1;
 }
 

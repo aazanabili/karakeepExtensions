@@ -68,7 +68,11 @@ const STR = {
     linkTitle: 'Title (optional)',
     linkUrl: 'URL',
     save: 'Save',
-    cancel: 'Cancel'
+    cancel: 'Cancel',
+    edit: 'Edit',
+    remove: 'Remove',
+    editQuickLink: 'Edit Quick Link',
+    dragToReorder: 'Drag to reorder'
   },
   ar: {
     appTitle: 'TabSync',
@@ -137,7 +141,11 @@ const STR = {
     linkTitle: 'العنوان (اختياري)',
     linkUrl: 'الرابط',
     save: 'حفظ',
-    cancel: 'إلغاء'
+    cancel: 'إلغاء',
+    edit: 'تعديل',
+    remove: 'إزالة',
+    editQuickLink: 'تعديل رابط سريع',
+    dragToReorder: 'اسحب لإعادة الترتيب'
   }
 };
 
