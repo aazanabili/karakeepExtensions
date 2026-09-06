@@ -98,15 +98,19 @@ async function renderQuickLinks() {
 }
 
 async function addQuickLink(title, url) {
+  // Add protocol if missing
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
   try {
     url = new URL(url).href; // validate
   } catch {
     return false;
   }
-  quickLinks.push({ id: crypto.randomUUID(), title: title || hostOf(url), url, createdAt: Date.now() });
-  await setQuickLinks(quickLinks);
+  const links = await getQuickLinks();
+  links.push({ id: crypto.randomUUID(), title: title || hostOf(url), url, createdAt: Date.now() });
+  await setQuickLinks(links);
+  quickLinks = links;
   await renderQuickLinks();
-  await send({ type: 'syncNow' }); // sync to server
+  send({ type: 'syncNow' }).catch(() => {}); // background sync, don't block
   return true;
 }
 
@@ -131,23 +135,51 @@ quickLinksEl.addEventListener('click', async (e) => {
   }
 });
 
-$('#btn-add-quick').addEventListener('click', () => {
+function openQuickModal() {
   $('#quick-title').value = '';
   $('#quick-url').value = '';
   quickModal.hidden = false;
-  $('#quick-url').focus();
-});
+  setTimeout(() => $('#quick-url').focus(), 50);
+}
 
-$('#btn-quick-cancel').addEventListener('click', () => {
+function closeQuickModal() {
   quickModal.hidden = true;
+}
+
+$('#btn-add-quick').addEventListener('click', openQuickModal);
+
+$('#btn-quick-cancel').addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  closeQuickModal();
 });
 
-$('#btn-quick-save').addEventListener('click', async () => {
+$('#btn-quick-save').addEventListener('click', async (e) => {
+  e.preventDefault();
+  e.stopPropagation();
   const title = $('#quick-title').value.trim();
   const url = $('#quick-url').value.trim();
-  if (!url) return;
-  const ok = await addQuickLink(title, url);
-  if (ok) quickModal.hidden = true;
+  if (!url) {
+    $('#quick-url').style.borderColor = 'var(--danger)';
+    return;
+  }
+  const saveBtn = e.currentTarget;
+  saveBtn.disabled = true;
+  try {
+    const ok = await addQuickLink(title, url);
+    if (ok) {
+      closeQuickModal();
+    } else {
+      $('#quick-url').style.borderColor = 'var(--danger)';
+    }
+  } finally {
+    saveBtn.disabled = false;
+  }
+});
+
+// Close modal on backdrop click
+quickModal.addEventListener('click', (e) => {
+  if (e.target === quickModal) closeQuickModal();
 });
 
 quickModal.addEventListener('keydown', (e) => {
