@@ -136,7 +136,6 @@ export async function runSync(trigger = 'auto') {
   const settings = await S.getSettings();
   const state = await captureBrowserState();
   const meta = await S.getMeta();
-  const quickLinks = await S.getQuickLinks();
   const quickLinksName = settings.quickLinksListName || 'QuickLinks';
 
   let stats = { added: 0, removed: 0 };
@@ -148,10 +147,9 @@ export async function runSync(trigger = 'auto') {
     const driver = new KarakeepDriver(settings.serverUrl, settings.apiKey);
     stats = await mirrorWithKarakeep(driver, state, settings);
 
-    // Sync QuickLinks as protected list (append-only, never auto-remove)
-    if (quickLinks.length > 0) {
-      await syncQuickLinks(driver, quickLinksName, quickLinks);
-    }
+    // QuickLinks: server is read-reference, browser is write-reference.
+    // Pull from server -> merge with local -> push local back as canonical.
+    await syncQuickLinks(driver, quickLinksName);
 
     // Cache shows everything on the server: open lists (live) + archived ones.
     const allLists = await driver.getLists();
@@ -184,25 +182,88 @@ export async function runSync(trigger = 'auto') {
 }
 
 /**
- * Protected sync for QuickLinks: only adds missing links to server.
- * Never removes links from server (even if removed locally — server is backup).
+ * QuickLinks sync: server = read-reference, browser = write-reference.
+ * 1. Pull server items -> store locally (server wins on conflicts for display)
+ * 2. Push local additions/deletions back to server (mirror)
+ * 3. Numbered prefixes preserve order across devices
  */
-async function syncQuickLinks(driver, listName, quickLinks) {
+async function syncQuickLinks(driver, listName) {
+  const local = await S.getQuickLinks();
+
+  // Ensure the protected list exists on the server.
   const allLists = await driver.getLists();
   let list = allLists.find((l) => l.name === listName);
+  if (!list) list = await driver.createList(listName);
 
-  if (!list) {
-    list = await driver.createList(listName);
+  const serverBms = await driver.getListBookmarks(list.id);
+
+  // Parse server items: strip numbered prefix (order = prefix value).
+  const serverItems = serverBms
+    .map((b) => {
+      const url = normalizeUrl(b.url) || b.url;
+      const m = /^(\d+)\s*-\s*(.*)$/.exec(b.title || '');
+      return { id: b.id, url, order: m ? Number(m[1]) : 9999, title: m ? m[2] : (b.title || '') };
+    })
+    .sort((a, b) => a.order - b.order);
+
+  const serverUrls = new Set(serverItems.map((i) => i.url));
+  const localUrls = new Set(local.map((l) => normalizeUrl(l.url) || l.url));
+
+  // Items to upload (local-only) and pull (server-only).
+  const toUpload = local.filter((l) => !serverUrls.has(normalizeUrl(l.url) || l.url));
+  const toPull = serverItems.filter((i) => !localUrls.has(i.url));
+
+  // Canonical list = local order + pulled items appended at end.
+  const canonical = [
+    ...local.map((l) => ({ ...l, url: normalizeUrl(l.url) || l.url })),
+    ...toPull.map((p) => ({ id: crypto.randomUUID(), url: p.url, title: p.title, createdAt: Date.now() }))
+  ];
+
+  // Dedup by URL, keep first.
+  const seen = new Set();
+  const deduped = canonical.filter((l) => {
+    if (seen.has(l.url)) return false;
+    seen.add(l.url);
+    return true;
+  });
+
+  const changed = toUpload.length > 0 || toPull.length > 0 || deduped.length !== local.length;
+
+  if (changed) {
+    await S.setQuickLinks(deduped);
+    await pushQuickLinksToServer(driver, list.id, deduped, serverItems);
   }
 
-  const current = await driver.getListBookmarks(list.id);
-  const currentUrls = new Set(current.map((b) => normalizeUrl(b.url) || b.url));
+  return { links: deduped, changed };
+}
 
-  for (const link of quickLinks) {
-    const url = normalizeUrl(link.url);
-    if (!url || currentUrls.has(url)) continue;
-    const bm = await driver.createLink(url, link.title);
-    await driver.addToList(list.id, bm.id);
+/** Push local quick links to server as full mirror (numbered titles = order). */
+async function pushQuickLinksToServer(driver, listId, links, knownServerItems = null) {
+  const serverItems = knownServerItems || (await driver.getListBookmarks(listId))
+    .map((b) => ({ id: b.id, url: normalizeUrl(b.url) || b.url, title: b.title || '' }));
+  const serverByUrl = new Map(serverItems.map((i) => [i.url, i]));
+  const desiredUrls = new Set(links.map((l) => normalizeUrl(l.url) || l.url));
+
+  // Add new + update titles with numbered prefix for order.
+  for (let i = 0; i < links.length; i++) {
+    const url = normalizeUrl(links[i].url) || links[i].url;
+    const titled = `${String(i + 1).padStart(2, '0')} - ${links[i].title || links[i].url}`;
+    const existing = serverByUrl.get(url);
+    if (!existing) {
+      const bm = await driver.createLink(url, titled);
+      await driver.addToList(listId, bm.id);
+    } else if (existing.title !== titled) {
+      await driver.req(`/bookmarks/${encodeURIComponent(existing.id)}`, {
+        method: 'PATCH', body: { title: titled }
+      }).catch(() => {});
+    }
+  }
+
+  // Remove server items not present locally (mirror delete).
+  for (const item of serverItems) {
+    if (!desiredUrls.has(item.url)) {
+      await driver.removeFromList(listId, item.id).catch(() => {});
+    }
   }
 }
 

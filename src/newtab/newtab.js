@@ -116,15 +116,17 @@ async function saveQuickLink(title, url) {
   await setQuickLinks(links);
   quickLinks = links;
   await renderQuickLinks();
-  send({ type: 'syncNow' }).catch(() => {}); // new URL is appended to server on next sync
+  send({ type: 'syncNow' }).catch(() => {}); // push to server (mirror)
   return true;
 }
 
 async function removeQuickLink(index) {
-  quickLinks.splice(index, 1);
-  await setQuickLinks(quickLinks);
+  const links = await getQuickLinks();
+  links.splice(index, 1);
+  await setQuickLinks(links);
+  quickLinks = links;
   await renderQuickLinks();
-  // Note: we don't remove from server (protected list = append-only)
+  send({ type: 'syncNow' }).catch(() => {}); // mirror delete to server
 }
 
 quickLinksEl.addEventListener('click', async (e) => {
