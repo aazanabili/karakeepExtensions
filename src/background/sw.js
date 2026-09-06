@@ -63,7 +63,8 @@ async function isActiveGroup(id) {
 
 async function scheduleIfActiveTab(tabId, reason) {
   const tab = await chrome.tabs.get(tabId).catch(() => null);
-  if (tab && await isActiveGroup(tab.groupId)) {
+  // Ungrouped tabs belong to `non`, which is always live.
+  if (tab && (tab.groupId === -1 || await isActiveGroup(tab.groupId))) {
     activeTabIds.add(tab.id);
     scheduleSync(reason);
   }
@@ -131,24 +132,28 @@ async function updateBadge() {
 
 chrome.tabs.onCreated.addListener((tab) => {
   void (async () => {
-    if (await isActiveGroup(tab.groupId)) {
+    if (tab.groupId === -1 || await isActiveGroup(tab.groupId)) {
       activeTabIds.add(tab.id);
       scheduleSync('tab-created');
     }
   })();
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (activeTabIds.delete(tabId)) scheduleSync('tab-removed');
+  activeTabIds.delete(tabId);
+  // The closed tab may have belonged to `non`, which is always live.
+  scheduleSync('tab-removed');
 });
 chrome.tabs.onMoved.addListener((tabId) => { void scheduleIfActiveTab(tabId, 'tab-moved'); });
 chrome.tabs.onAttached.addListener((tabId) => { void scheduleIfActiveTab(tabId, 'tab-attached'); });
 chrome.tabs.onDetached.addListener((tabId) => {
-  if (activeTabIds.has(tabId)) scheduleSync('tab-detached');
+  // A detached tab becomes ungrouped and joins `non`.
+  activeTabIds.delete(tabId);
+  scheduleSync('tab-detached');
 });
 chrome.tabs.onUpdated.addListener((_id, info, tab) => {
   if (info.url === undefined && info.title === undefined && info.groupId === undefined) return;
   void (async () => {
-    if (await isActiveGroup(tab.groupId)) {
+    if (tab.groupId === -1 || await isActiveGroup(tab.groupId)) {
       activeTabIds.add(tab.id);
       scheduleSync('tab-updated');
     } else if (activeTabIds.delete(tab.id)) {
@@ -193,7 +198,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'periodic-sync') {
     if (await isRestoring()) return;
-    if (!(await S.getActiveGroups()).length) return;
+    // No early return: `non` is always live and must pull remote changes.
     try {
       await queueSessionSync('periodic');
     } catch (e) {
@@ -203,13 +208,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     return;
   }
   if (alarm.name !== 'retry') return;
-  if (!(await S.getActiveGroups()).length) {
-    await chrome.storage.local.remove(S.K.SESSION_SNAPSHOT);
-    await S.setSyncState({ dirty: false, lastError: '', pendingSince: 0 });
-    chrome.alarms.clear('retry').catch(() => {});
-    await updateBadge();
-    return;
-  }
   const st = await S.getSyncState();
   if (!st.dirty) { chrome.alarms.clear('retry').catch(() => {}); return; }
   try {

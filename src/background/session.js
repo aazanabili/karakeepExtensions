@@ -71,14 +71,16 @@ export async function captureBrowserSession(includedGroupIds = null) {
 
   for (const tab of tabs) {
     if (tab.pinned || !isSyncableUrl(tab.url)) continue;
-    if (includedGroupIds && !includedGroupIds.has(tab.groupId)) continue;
+    // Untracked groups are skipped, but ungrouped tabs always belong to `non`.
+    if (includedGroupIds && tab.groupId !== -1 && !includedGroupIds.has(tab.groupId)) continue;
     const url = normalizeUrl(tab.url);
     if (!url) continue;
     const group = tab.groupId !== -1 ? groupsById.get(tab.groupId) : null;
     const rawName = group?.title || nonName;
     const name = rawName === quickName ? `${rawName} (Tabs)` : rawName;
-    const kind = group?.title ? 'group' : 'non';
-    if (!lists.has(name)) lists.set(name, { name, kind, color: group?.color || '', tabs: [] });
+    const isNon = name === nonName;
+    const kind = !group?.title || isNon ? 'non' : 'group';
+    if (!lists.has(name)) lists.set(name, { name, kind, color: isNon ? '' : group?.color || '', tabs: [] });
     lists.get(name).tabs.push({
       url,
       title: tab.title || url,
@@ -106,11 +108,16 @@ async function readKarakeepSession(settings, browserState, includeNames = null) 
     if (list.name === quickName || list.name === archiveName || list.name.startsWith('_TabSync')) continue;
     if (includeNames && !includeNames.has(list.name)) continue;
     const browserList = browserState.lists.find((item) => item.name === list.name);
+    const nonName = settings.nonListName || 'non';
     const metadata = parseSessionDescription(list.description) || {
-      kind: list.name === (settings.nonListName || 'non') ? 'non' : 'group',
+      kind: list.name === nonName ? 'non' : 'group',
       color: browserList?.color || '',
       order: []
     };
+    if (list.name === nonName) {
+      metadata.kind = 'non';
+      metadata.color = '';
+    }
     const bookmarks = await driver.getListBookmarks(list.id);
     const compactOrder = metadata.order.every((key) => key.length === 4);
     const orderByKey = new Map(metadata.order.map((key, index) => [key, index]));
@@ -206,14 +213,6 @@ function filterSessionState(stateInput, names) {
   return normalizeSessionState({
     version: 1,
     lists: state.lists.filter((list) => names.has(list.name))
-  });
-}
-
-function asActiveGroupState(stateInput) {
-  const state = normalizeSessionState(stateInput);
-  return normalizeSessionState({
-    version: 1,
-    lists: state.lists.map((list) => ({ ...list, kind: 'group' }))
   });
 }
 
@@ -572,13 +571,12 @@ export async function synchronizeSession(trigger = 'auto') {
     S.getActiveGroups(),
     S.getSessionSnapshot()
   ]);
-  if (!activeGroups.length) {
-    await chrome.storage.local.remove(S.K.SESSION_SNAPSHOT);
-    await S.setSyncState({ dirty: false, lastError: '', pendingSince: 0 });
-    return { ok: true, inactive: true };
-  }
+  // `non` (ungrouped tabs) is always live: a plain tab must land in storage
+  // even when no tab group is active on this device.
+  const nonName = settings.nonListName || 'non';
   const activeGroupIds = new Set(activeGroups.map((group) => group.id));
-  const activeNames = new Set(activeGroups.map((group) => group.name));
+  const activeNames = new Set([...activeGroups.map((group) => group.name), nonName]);
+  const managedGroupIds = new Set([...activeGroupIds, -1]);
   const initialBrowser = await captureBrowserSession(activeGroupIds);
   const baseSnapshot = normalizeSessionState(storedBase || { version: 1, lists: [] });
   const scopeNames = new Set([
@@ -588,10 +586,10 @@ export async function synchronizeSession(trigger = 'auto') {
 
   let current = filterSessionState(initialBrowser, activeNames);
   let snapshot = await readSessionStorage(settings, initialBrowser, scopeNames);
-  let remoteScope = asActiveGroupState(filterSessionState(snapshot.state, scopeNames));
+  let remoteScope = filterSessionState(snapshot.state, scopeNames);
   const afterRead = filterSessionState(await captureBrowserSession(activeGroupIds), activeNames);
   if (!sessionStatesEqual(current, afterRead)) current = afterRead;
-  let base = storedBase ? asActiveGroupState(filterSessionState(baseSnapshot, scopeNames)) : remoteScope;
+  let base = storedBase ? filterSessionState(baseSnapshot, scopeNames) : remoteScope;
   for (const remoteList of remoteScope.lists) {
     if (activeNames.has(remoteList.name) && !base.lists.some((list) => list.name === remoteList.name)) {
       base.lists.push(structuredClone(remoteList));
@@ -603,7 +601,7 @@ export async function synchronizeSession(trigger = 'auto') {
   let browserChanged = !sessionStatesEqual(base, current);
   if (browserChanged) {
     const preflight = await readSessionStorage(settings, current, scopeNames);
-    const preflightScope = asActiveGroupState(filterSessionState(preflight.state, scopeNames));
+    const preflightScope = filterSessionState(preflight.state, scopeNames);
     if (!sessionStatesEqual(remoteScope, preflightScope)) {
       snapshot = preflight;
       remoteScope = preflightScope;
@@ -638,7 +636,7 @@ export async function synchronizeSession(trigger = 'auto') {
 
   if (wroteStorage) {
     const verification = await readSessionStorage(settings, current, scopeNames);
-    const verifiedScope = asActiveGroupState(filterSessionState(verification.state, scopeNames));
+    const verifiedScope = filterSessionState(verification.state, scopeNames);
     if (!sessionStatesEqual(verifiedScope, desiredScope)) {
       desiredScope = rebaseSessionChange(base, current, verifiedScope);
       desiredStorage = settings.driver === 'local'
@@ -650,7 +648,7 @@ export async function synchronizeSession(trigger = 'auto') {
 
   const activeDesired = filterSessionState(desiredScope, activeNames);
   const conflict = !sessionStatesEqual(base, remoteBeforeWrite);
-  if (!sessionStatesEqual(current, activeDesired)) await reconcileBrowser(activeDesired, activeGroupIds);
+  if (!sessionStatesEqual(current, activeDesired)) await reconcileBrowser(activeDesired, managedGroupIds);
   await S.setSessionSnapshot(activeDesired);
   if (settings.driver === 'local') {
     await saveSessionCache(desiredStorage, activeDesired, settings.driver);
