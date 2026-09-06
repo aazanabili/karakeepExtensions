@@ -282,11 +282,27 @@ export async function restoreList(listName, mode = 'window') {
   const groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
   await chrome.tabGroups.update(groupId, { title: listName, color });
 
-  // Discard everything except the active tab (discard fails on the active tab by design).
-  const [active] = await chrome.tabs.query({ windowId, active: true });
+  // Let pages load so titles/favicons appear correctly, then idle inactive tabs
+  // to save RAM. Discarding immediately would leave every tab showing "Untitled".
   for (const id of tabIds) {
-    if (active && id === active.id) continue;
-    try { await chrome.tabs.discard(id); } catch { /* active or already discarded */ }
+    void (async () => {
+      const tab = await chrome.tabs.get(id).catch(() => null);
+      if (!tab || tab.active || tab.discarded) return;
+      if (tab.status === 'complete') {
+        chrome.tabs.discard(id).catch(() => {});
+        return;
+      }
+      const onUpdated = (tabId, info) => {
+        if (tabId !== id || info.status !== 'complete') return;
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        chrome.tabs.get(id)
+          .then((t2) => { if (!t2.active && !t2.discarded) chrome.tabs.discard(id).catch(() => {}); })
+          .catch(() => {});
+      };
+      chrome.tabs.onUpdated.addListener(onUpdated);
+      // Safety: give up after 45s (slow/broken pages stay loaded instead).
+      setTimeout(() => chrome.tabs.onUpdated.removeListener(onUpdated), 45000);
+    })();
   }
 
   await S.logActivity('restore', `${listName} (${tabIds.length})`);
