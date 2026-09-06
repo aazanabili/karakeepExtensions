@@ -448,25 +448,9 @@ body > * { position: relative; z-index: 1; }
   border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
 }
 
-/* ---- Group drag & drop + fold ---- */
-.drag-handle {
-  cursor: grab;
-  color: var(--muted);
-  font-size: 12px;
-  letter-spacing: 1px;
-  user-select: none;
-  padding: 2px 4px;
-  border-radius: 6px;
-  flex-shrink: 0;
-  line-height: 1;
-}
-
-.drag-handle:hover { background: var(--accent-soft); color: var(--text); }
-.drag-handle:active { cursor: grabbing; }
-
-.card[draggable="false"] .drag-handle { display: none; }
-
-.collapse-btn {
+/* ---- Group move + fold ---- */
+.collapse-btn,
+.move-btn {
   width: 24px;
   height: 24px;
   flex-shrink: 0;
@@ -484,18 +468,19 @@ body > * { position: relative; z-index: 1; }
   padding: 0;
 }
 
-.collapse-btn:hover { background: var(--accent-soft); color: var(--text); }
+.collapse-btn:hover,
+.move-btn:hover { background: var(--accent-soft); color: var(--text); }
+
+.move-btn { font-size: 11px; }
+
+/* Mirror arrows in RTL so each points to its actual move direction */
+:dir(rtl) .move-btn { transform: scaleX(-1); }
 
 .card.collapsed .collapse-btn { transform: rotate(-90deg); }
 :dir(rtl) .card.collapsed .collapse-btn { transform: rotate(90deg); }
 
 .card.collapsed .links,
 .card.collapsed .card-meta { display: none; }
-
-.card.dragging { opacity: 0.45; }
-
-.card-drop-before { box-shadow: inset 0 3px 0 var(--accent); }
-.card-drop-after { box-shadow: inset 0 -3px 0 var(--accent); }
 
 .card-head {
   display: flex;

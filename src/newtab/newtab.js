@@ -355,11 +355,11 @@ function renderLists() {
       </li>`).join('');
 
     const collapsed = collapsedGroups.has(list.name);
-    const cardsDraggable = !filterQuery.trim();
     return `
-    <section class="card${collapsed ? ' collapsed' : ''}" data-list="${esc(list.name)}" draggable="${cardsDraggable ? 'true' : 'false'}">
+    <section class="card${collapsed ? ' collapsed' : ''}" data-list="${esc(list.name)}">
       <div class="card-head">
-        <span class="drag-handle" title="${esc(t('moveGroup'))}">⋮⋮</span>
+        <button class="move-btn" data-move="-1" data-mi="${li}" title="${esc(t('moveLeft'))}">◀</button>
+        <button class="move-btn" data-move="1" data-mi="${li}" title="${esc(t('moveRight'))}">▶</button>
         <button class="collapse-btn" data-collapse="${li}" title="${esc(collapsed ? t('expand') : t('collapse'))}" aria-expanded="${collapsed ? 'false' : 'true'}">▾</button>
         <span class="color-dot" style="background:${esc(color)}"></span>
         <span class="card-name" title="${esc(list.name)}">${esc(list.name)}</span>
@@ -476,6 +476,24 @@ grid.addEventListener('click', async (e) => {
     }
     return;
   }
+  const moveBtn = e.target.closest('[data-move]');
+  if (moveBtn) {
+    const li = Number(moveBtn.dataset.mi);
+    const j = li + Number(moveBtn.dataset.move);
+    const names = visibleLists.map((l) => l.name);
+    if (li >= 0 && j >= 0 && j < names.length) {
+      const [moved] = names.splice(li, 1);
+      names.splice(j, 0, moved);
+      // Merge back into the full stored order (hidden filtered lists stay in place).
+      const visibleSet = new Set(visibleLists.map((l) => l.name));
+      const queue = [...names];
+      groupOrder = sortLists(cache.lists || []).map((l) =>
+        visibleSet.has(l.name) ? queue.shift() : l.name);
+      saveGroupOrder();
+      renderLists();
+    }
+    return;
+  }
   const linkEl = e.target.closest('.link-item');
   if (linkEl) {
     chrome.tabs.create({ url: linkEl.dataset.url, active: true });
@@ -499,67 +517,7 @@ grid.addEventListener('click', async (e) => {
   if (!res?.ok) console.warn('restore failed', res);
 });
 
-// ---- Groups: drag & drop reorder + fold ----------------------------------------
-
-let cardDragName = null;
-
-function clearCardDropIndicators() {
-  grid.querySelectorAll('.card-drop-before,.card-drop-after')
-    .forEach((el) => el.classList.remove('card-drop-before', 'card-drop-after'));
-}
-
-grid.addEventListener('dragstart', (e) => {
-  const card = e.target.closest?.('.card');
-  if (!card || e.target.closest('button') || e.target.closest('.link-item')) {
-    e.preventDefault();
-    return;
-  }
-  cardDragName = card.dataset.list;
-  card.classList.add('dragging');
-  e.dataTransfer.effectAllowed = 'move';
-  try { e.dataTransfer.setData('text/plain', cardDragName); } catch { /* not required */ }
-});
-
-grid.addEventListener('dragover', (e) => {
-  if (!cardDragName) return;
-  const card = e.target.closest?.('.card');
-  if (!card || card.dataset.list === cardDragName) return;
-  e.preventDefault(); // allow drop
-  e.dataTransfer.dropEffect = 'move';
-  clearCardDropIndicators();
-  const r = card.getBoundingClientRect();
-  const before = (e.clientY - r.top) < r.height / 2;
-  card.classList.add(before ? 'card-drop-before' : 'card-drop-after');
-});
-
-grid.addEventListener('drop', (e) => {
-  if (!cardDragName) return;
-  const card = e.target.closest?.('.card');
-  clearCardDropIndicators();
-  const from = cardDragName;
-  cardDragName = null;
-  if (!card || card.dataset.list === from) return;
-  e.preventDefault();
-  const r = card.getBoundingClientRect();
-  const before = (e.clientY - r.top) < r.height / 2;
-  const names = visibleLists.map((l) => l.name).filter((n) => n !== from);
-  const idx = names.indexOf(card.dataset.list) + (before ? 0 : 1);
-  names.splice(idx, 0, from);
-  // Merge the visible order back into the full stored order
-  // (the visible view may be filtered, so keep hidden lists in place).
-  const visibleSet = new Set(visibleLists.map((l) => l.name));
-  const queue = [...names];
-  groupOrder = sortLists(cache.lists || []).map((l) =>
-    visibleSet.has(l.name) ? queue.shift() : l.name);
-  saveGroupOrder();
-  renderLists();
-});
-
-grid.addEventListener('dragend', () => {
-  cardDragName = null;
-  clearCardDropIndicators();
-  grid.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging'));
-});
+// ---- Groups: move with ◀ ▶ buttons + fold (order persisted in groupOrder) ----
 
 // ---- Top Bar Actions --------------------------------------------------------
 
