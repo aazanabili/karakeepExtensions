@@ -329,5 +329,5 @@ export async function restoreList(listName, mode = 'window') {
   }
 
   await S.logActivity('restore', `${listName} (${tabIds.length})`);
-  return { ok: true, count: tabIds.length };
+  return { ok: true, count: tabIds.length, groupId };
 }

@@ -13,7 +13,9 @@ export const K = {
   QUICK_LINKS: 'quickLinks', // [{id, title, url, createdAt}] — local + synced as protected list
   SEARCH_ENGINE: 'searchEngine', // id of default engine
   QUICK_LINKS_MIGRATED: 'quickLinksMigrated',
-  SESSION_SNAPSHOT: 'sessionSnapshot'
+  SESSION_SNAPSHOT: 'sessionSnapshot',
+  ACTIVE_GROUPS: 'activeGroups',
+  ACTIVE_MODEL_MIGRATED: 'activeModelMigrated'
 };
 
 export const DEFAULT_SETTINGS = {
@@ -126,6 +128,17 @@ export async function getSessionSnapshot() {
 
 export async function setSessionSnapshot(snapshot) {
   await chrome.storage.local.set({ [K.SESSION_SNAPSHOT]: snapshot });
+}
+
+export async function getActiveGroups() {
+  const o = await chrome.storage.local.get(K.ACTIVE_GROUPS);
+  return (o[K.ACTIVE_GROUPS] || []).filter((group) =>
+    Number.isInteger(group?.id) && typeof group?.name === 'string' && group.name);
+}
+
+export async function setActiveGroups(groups) {
+  const unique = new Map(groups.map((group) => [group.id, { id: group.id, name: group.name }]));
+  await chrome.storage.local.set({ [K.ACTIVE_GROUPS]: [...unique.values()] });
 }
 
 export async function getSearchEngine() {

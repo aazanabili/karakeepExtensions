@@ -1,11 +1,16 @@
 // Service worker (MV3, ES modules): event debouncing, offline retry, badge, message bus.
 
 import { refreshCache, restoreList, mutateQuickLinks } from './sync.js';
-import { synchronizeSession } from './session.js';
+import {
+  closeAllBrowserGroups,
+  isInternallyRemovedGroup,
+  refreshSessionList,
+  synchronizeSession
+} from './session.js';
 import * as S from '../lib/settings.js';
 
 const DEBOUNCE_MS = 2500;
-const PERIODIC_SYNC_MINUTES = 1;
+const PERIODIC_SYNC_MINUTES = 5;
 const RESTORE_FLAG_KEY = 'restoring'; // { until: ts } — survives SW restarts
 const RESTORE_LOCK_MS = 30000;
 
@@ -14,6 +19,9 @@ let restoringNow = false; // in-memory fast path
 let startupPending = false;
 let quickLinkQueue = Promise.resolve();
 let sessionQueue = Promise.resolve();
+let activeGroupQueue = Promise.resolve();
+const groupTitles = new Map();
+const activeTabIds = new Set();
 
 function queueQuickLinkOperation(op) {
   const result = quickLinkQueue.then(() => mutateQuickLinks(op));
@@ -21,10 +29,53 @@ function queueQuickLinkOperation(op) {
   return result;
 }
 
-function queueSessionSync(trigger, forceRestore = false) {
-  const result = sessionQueue.then(() => synchronizeSession(trigger, forceRestore));
+function queueSessionSync(trigger) {
+  const result = sessionQueue.then(() => synchronizeSession(trigger));
   sessionQueue = result.catch(() => {});
   return result;
+}
+
+function registerActiveGroup(id, name) {
+  if (!Number.isInteger(id) || !name) return Promise.resolve();
+  const result = activeGroupQueue.then(async () => {
+    const groups = await S.getActiveGroups();
+    await S.setActiveGroups([...groups.filter((group) => group.id !== id), { id, name }]);
+    await refreshActiveTabIds();
+  });
+  activeGroupQueue = result.catch(() => {});
+  return result;
+}
+
+function unregisterActiveGroup(id) {
+  const result = activeGroupQueue.then(async () => {
+    const groups = await S.getActiveGroups();
+    await S.setActiveGroups(groups.filter((group) => group.id !== id));
+    await refreshActiveTabIds();
+  });
+  activeGroupQueue = result.catch(() => {});
+  return result;
+}
+
+async function isActiveGroup(id) {
+  if (!Number.isInteger(id) || id === -1) return false;
+  return (await S.getActiveGroups()).some((group) => group.id === id);
+}
+
+async function scheduleIfActiveTab(tabId, reason) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (tab && await isActiveGroup(tab.groupId)) {
+    activeTabIds.add(tab.id);
+    scheduleSync(reason);
+  }
+}
+
+async function refreshActiveTabIds() {
+  const groupIds = new Set((await S.getActiveGroups()).map((group) => group.id));
+  const tabs = await chrome.tabs.query({});
+  activeTabIds.clear();
+  for (const tab of tabs) {
+    if (groupIds.has(tab.groupId)) activeTabIds.add(tab.id);
+  }
 }
 
 async function isRestoring() {
@@ -78,26 +129,71 @@ async function updateBadge() {
 
 // ---- Tab / group watchers -------------------------------------------------
 
-chrome.tabs.onCreated.addListener(() => scheduleSync('tab-created'));
-chrome.tabs.onRemoved.addListener(() => scheduleSync('tab-removed'));
-chrome.tabs.onMoved.addListener(() => scheduleSync('tab-moved'));
-chrome.tabs.onAttached.addListener(() => scheduleSync('tab-attached'));
-chrome.tabs.onDetached.addListener(() => scheduleSync('tab-detached'));
-chrome.tabs.onUpdated.addListener((_id, info) => {
-  if (info.url !== undefined || info.title !== undefined) scheduleSync('tab-updated');
+chrome.tabs.onCreated.addListener((tab) => {
+  void (async () => {
+    if (await isActiveGroup(tab.groupId)) {
+      activeTabIds.add(tab.id);
+      scheduleSync('tab-created');
+    }
+  })();
 });
-chrome.tabs.onReplaced?.addListener(() => scheduleSync('tab-replaced'));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (activeTabIds.delete(tabId)) scheduleSync('tab-removed');
+});
+chrome.tabs.onMoved.addListener((tabId) => { void scheduleIfActiveTab(tabId, 'tab-moved'); });
+chrome.tabs.onAttached.addListener((tabId) => { void scheduleIfActiveTab(tabId, 'tab-attached'); });
+chrome.tabs.onDetached.addListener((tabId) => {
+  if (activeTabIds.has(tabId)) scheduleSync('tab-detached');
+});
+chrome.tabs.onUpdated.addListener((_id, info, tab) => {
+  if (info.url === undefined && info.title === undefined && info.groupId === undefined) return;
+  void (async () => {
+    if (await isActiveGroup(tab.groupId)) {
+      activeTabIds.add(tab.id);
+      scheduleSync('tab-updated');
+    } else if (activeTabIds.delete(tab.id)) {
+      scheduleSync('tab-updated');
+    }
+  })();
+});
+chrome.tabs.onReplaced?.addListener((addedTabId) => { void scheduleIfActiveTab(addedTabId, 'tab-replaced'); });
 
-chrome.tabGroups.onCreated.addListener(() => scheduleSync('group-created'));
-chrome.tabGroups.onUpdated.addListener(() => scheduleSync('group-updated'));
-chrome.tabGroups.onRemoved.addListener(() => scheduleSync('group-removed'));
-chrome.tabGroups.onMoved.addListener(() => scheduleSync('group-moved'));
+chrome.tabGroups.onCreated.addListener((group) => {
+  groupTitles.set(group.id, group.title || '');
+});
+chrome.tabGroups.onUpdated.addListener((group) => {
+  void (async () => {
+    groupTitles.set(group.id, group.title || '');
+    if (await isActiveGroup(group.id)) {
+      await registerActiveGroup(group.id, group.title);
+      scheduleSync('group-updated');
+    }
+  })();
+});
+chrome.tabGroups.onRemoved.addListener((group) => {
+  void (async () => {
+    groupTitles.delete(group.id);
+    if (startupPending || isInternallyRemovedGroup(group.id)) return;
+    if (await isActiveGroup(group.id)) {
+      await unregisterActiveGroup(group.id);
+      scheduleSync('group-removed');
+    }
+  })();
+});
+chrome.tabGroups.onMoved.addListener((group) => {
+  void (async () => { if (await isActiveGroup(group.id)) scheduleSync('group-moved'); })();
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes[S.K.ACTIVE_GROUPS]) void refreshActiveTabIds();
+});
 
 // ---- Retry alarm ----------------------------------------------------------
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'periodic-sync') {
     if (await isRestoring()) return;
+    if (!(await S.getActiveGroups()).length) return;
     try {
       await queueSessionSync('periodic');
     } catch (e) {
@@ -107,6 +203,13 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     return;
   }
   if (alarm.name !== 'retry') return;
+  if (!(await S.getActiveGroups()).length) {
+    await chrome.storage.local.remove(S.K.SESSION_SNAPSHOT);
+    await S.setSyncState({ dirty: false, lastError: '', pendingSince: 0 });
+    chrome.alarms.clear('retry').catch(() => {});
+    await updateBadge();
+    return;
+  }
   const st = await S.getSyncState();
   if (!st.dirty) { chrome.alarms.clear('retry').catch(() => {}); return; }
   try {
@@ -142,9 +245,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         return await queueQuickLinkOperation(msg.op);
       case 'restore': {
         restoringNow = true;
-        await chrome.storage.local.set({ [RESTORE_FLAG_KEY]: { until: Date.now() + RESTORE_LOCK_MS } });
+        await chrome.storage.local.set({
+          [RESTORE_FLAG_KEY]: { until: Date.now() + RESTORE_LOCK_MS, kind: 'manual' }
+        });
         try {
-          return await restoreList(msg.name, msg.mode);
+          const refreshed = await refreshSessionList(msg.name);
+          if (!refreshed.ok) {
+            return refreshed;
+          }
+          const restored = await restoreList(msg.name, msg.mode);
+          const stillOpen = restored.ok
+            ? await chrome.tabGroups.get(restored.groupId).catch(() => null)
+            : null;
+          if (stillOpen) await registerActiveGroup(restored.groupId, msg.name);
+          else if (restored.ok) return { ok: false, reason: 'CLOSED_DURING_RESTORE' };
+          return restored;
         } finally {
           // Release after events settle, then resync (should be a no-op mirror).
           setTimeout(async () => {
@@ -186,11 +301,19 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  // Wait for Chromium's own session restoration, then make it match central storage.
+  // Every browser launch starts with the remote library inactive on this device.
   chrome.alarms.create('periodic-sync', { periodInMinutes: PERIODIC_SYNC_MINUTES });
   startupPending = true;
   setTimeout(async () => {
-    try { await queueSessionSync('startup', true); } catch (e) {
+    try {
+      await activeGroupQueue;
+      const activeGroups = await S.getActiveGroups();
+      await closeAllBrowserGroups(new Set(activeGroups.map((group) => group.name)));
+      await S.setActiveGroups([]);
+      await chrome.storage.local.remove(S.K.SESSION_SNAPSHOT);
+      const cache = await S.getCache();
+      await S.saveCache({ ...cache, lists: cache.lists.map((list) => ({ ...list, live: false })) });
+    } catch (e) {
       await scheduleRetry(String(e?.message || e));
     } finally {
       startupPending = false;
@@ -202,6 +325,19 @@ chrome.runtime.onStartup.addListener(async () => {
 
 // SW wake-up (event page semantics): resume any pending sync.
 (async () => {
+  const groups = await chrome.tabGroups.query({}).catch(() => []);
+  for (const group of groups) groupTitles.set(group.id, group.title || '');
+  await refreshActiveTabIds();
+  const migration = await chrome.storage.local.get(S.K.ACTIVE_MODEL_MIGRATED);
+  if (!migration[S.K.ACTIVE_MODEL_MIGRATED]) {
+    const [activeGroups, cache] = await Promise.all([S.getActiveGroups(), S.getCache()]);
+    if (!activeGroups.length) {
+      const legacyNames = new Set(cache.lists.filter((list) => list.live).map((list) => list.name));
+      await closeAllBrowserGroups(legacyNames);
+      await S.saveCache({ ...cache, lists: cache.lists.map((list) => ({ ...list, live: false })) });
+    }
+    await chrome.storage.local.set({ [S.K.ACTIVE_MODEL_MIGRATED]: true });
+  }
   const o = await chrome.storage.local.get(S.K.PENDING_AT);
   if (o[S.K.PENDING_AT]) scheduleSync('resume');
   await updateBadge();

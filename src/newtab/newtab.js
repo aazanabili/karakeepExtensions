@@ -5,7 +5,7 @@ import { getSettings, getCache, saveSettings, getQuickLinks, getSearchEngine, se
 import { resolveLang, makeT, applyI18n, applyTheme, relTime } from '../lib/i18n.js';
 import { faviconUrl, hostOf, GROUP_COLORS } from '../lib/normalize.js';
 import { ENGINES, buildSearchUrl } from '../lib/engines.js';
-import { loadHandle, saveHandle, requestPerm } from '../lib/drivers/localfs.js';
+import { loadHandle, queryPerm, saveHandle, requestPerm } from '../lib/drivers/localfs.js';
 
 let settings;
 let cache;
@@ -415,8 +415,9 @@ function showBanner(text, btnText, onClick) {
 
 async function checkReadiness() {
   if (settings.driver === 'local') {
-    const res = await send({ type: 'refreshCache' });
-    if (!res?.ok && (res.reason === 'NEED_PERMISSION' || res.reason === 'NO_FOLDER')) {
+    const linkedHandle = await loadHandle();
+    const permission = linkedHandle ? await queryPerm(linkedHandle) : 'prompt';
+    if (!linkedHandle || permission !== 'granted') {
       showBanner(`${t('folderNeeded')} ${t('folderHint')}`, t('grantRetry'), async () => {
         let handle = await loadHandle();
         if (!handle && 'showDirectoryPicker' in window) {
@@ -432,8 +433,6 @@ async function checkReadiness() {
     }
   } else if (!settings.serverUrl || !settings.apiKey) {
     showBanner(t('notConfigured'), t('settings'), () => chrome.runtime.openOptionsPage());
-  } else {
-    send({ type: 'refreshCache' }); // silent background refresh
   }
 }
 
