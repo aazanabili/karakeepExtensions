@@ -79,7 +79,9 @@ const STR = {
     edit: 'Edit',
     remove: 'Remove',
     editQuickLink: 'Edit Quick Link',
-    dragToReorder: 'Drag to reorder'
+    dragToReorder: 'Drag to reorder',
+    quickConflict: 'Your action was cancelled because storage had a newer version. The latest stored links were loaded.',
+    quickOperationFailed: 'The quick-link operation failed.'
   },
   ar: {
     appTitle: 'TabSync',
@@ -159,7 +161,9 @@ const STR = {
     edit: 'تعديل',
     remove: 'إزالة',
     editQuickLink: 'تعديل رابط سريع',
-    dragToReorder: 'اسحب لإعادة الترتيب'
+    dragToReorder: 'اسحب لإعادة الترتيب',
+    quickConflict: 'أُلغيت العملية لأن نظام التخزين يحتوي نسخة أحدث. تم تحميل آخر نسخة محفوظة.',
+    quickOperationFailed: 'فشلت عملية الرابط السريع.'
   }
 };
 

@@ -503,6 +503,27 @@ body {
   font-size: 15px;
 }
 
+.toast {
+  position: fixed;
+  inset-inline-start: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 200;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.24);
+  font-size: 13px;
+  text-align: center;
+}
+
+.toast.error { border-color: var(--danger); }
+
+.toast[hidden] { display: none !important; }
+
 /* ========== Modal ========== */
 .modal {
   position: fixed;

@@ -123,3 +123,48 @@ export async function writeMirror(handle, state, knownFiles) {
   }
   return [...written];
 }
+
+/** QuickLinks.txt format: `01 - Title<TAB>https://example.com` (bare URLs remain readable). */
+export async function readQuickLinks(handle, fileName) {
+  let fh;
+  try {
+    fh = await handle.getFileHandle(fileName);
+  } catch (e) {
+    if (e?.name === 'NotFoundError') return { exists: false, links: [] };
+    throw e;
+  }
+  const file = await fh.getFile();
+  const links = [];
+  for (const rawLine of (await file.text()).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const tab = line.lastIndexOf('\t');
+    if (tab > -1) {
+      const rawLabel = line.slice(0, tab).trim();
+      const prefix = /^(\d+)\s*-\s*(.*)$/.exec(rawLabel);
+      const label = prefix ? prefix[2].trim() : rawLabel;
+      const url = normalizeUrl(line.slice(tab + 1).trim());
+      if (url) links.push({ title: label, url, order: prefix ? Number(prefix[1]) : 9999 });
+    } else {
+      const url = normalizeUrl(line);
+      if (url) links.push({ title: '', url, order: 9999 });
+    }
+  }
+  links.sort((a, b) => a.order - b.order);
+  return {
+    exists: true,
+    links: links.map(({ title, url }) => ({ title, url })),
+    updatedAt: file.lastModified
+  };
+}
+
+export async function writeQuickLinks(handle, fileName, links) {
+  const fh = await handle.getFileHandle(fileName, { create: true });
+  const writable = await fh.createWritable();
+  const lines = links.map((link, index) => {
+    const title = String(link.title || '').replace(/[\t\r\n]+/g, ' ').trim();
+    return `${String(index + 1).padStart(2, '0')} - ${title}\t${link.url}`;
+  });
+  await writable.write(lines.join('\n') + (lines.length ? '\n' : ''));
+  await writable.close();
+}

@@ -1,7 +1,7 @@
 // New Tab dashboard: quick links, web search, list filtering, session restore.
 // Dark/light + AR/EN follow the shared settings.
 
-import { getSettings, getCache, saveSettings, getQuickLinks, setQuickLinks, getSearchEngine, setSearchEngine } from '../lib/settings.js';
+import { getSettings, getCache, saveSettings, getQuickLinks, getSearchEngine, setSearchEngine } from '../lib/settings.js';
 import { resolveLang, makeT, applyI18n, applyTheme, relTime } from '../lib/i18n.js';
 import { faviconUrl, hostOf, GROUP_COLORS } from '../lib/normalize.js';
 import { ENGINES, buildSearchUrl } from '../lib/engines.js';
@@ -26,6 +26,8 @@ const webSearchEl = $('#web-search');
 const engineTabsEl = $('#engine-tabs');
 const quickLinksEl = $('#quick-links');
 const quickModal = $('#quick-modal');
+const toastEl = $('#toast');
+let toastTimer = null;
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
@@ -49,6 +51,26 @@ function fuzzy(q, s) {
 
 function send(msg) {
   return chrome.runtime.sendMessage(msg).catch(() => ({ ok: false }));
+}
+
+function showToast(message, error = false) {
+  clearTimeout(toastTimer);
+  toastEl.textContent = message;
+  toastEl.className = 'toast' + (error ? ' error' : '');
+  toastEl.hidden = false;
+  toastTimer = setTimeout(() => { toastEl.hidden = true; }, 4500);
+}
+
+async function submitQuickLinkOperation(op) {
+  const result = await send({ type: 'quickLinkOp', op });
+  quickLinks = result?.links || await getQuickLinks();
+  await renderQuickLinks();
+  if (result?.conflict) {
+    showToast(t('quickConflict'), true);
+  } else if (!result?.ok) {
+    showToast(`${t('quickOperationFailed')} ${result?.error || ''}`.trim(), true);
+  }
+  return result;
 }
 
 // ---- Web Search (Primary) -----------------------------------------------------
@@ -106,27 +128,15 @@ async function saveQuickLink(title, url) {
   } catch {
     return false;
   }
-  const links = await getQuickLinks();
-  if (editingIndex >= 0 && links[editingIndex]) {
-    // Edit in place: keep id + createdAt
-    links[editingIndex] = { ...links[editingIndex], title: title || hostOf(url), url };
-  } else {
-    links.push({ id: crypto.randomUUID(), title: title || hostOf(url), url, createdAt: Date.now() });
-  }
-  await setQuickLinks(links);
-  quickLinks = links;
-  await renderQuickLinks();
-  send({ type: 'syncNow' }).catch(() => {}); // push to server (mirror)
-  return true;
+  const link = { title: title || hostOf(url), url };
+  const op = editingIndex >= 0
+    ? { type: 'edit', index: editingIndex, link }
+    : { type: 'add', link };
+  return submitQuickLinkOperation(op);
 }
 
 async function removeQuickLink(index) {
-  const links = await getQuickLinks();
-  links.splice(index, 1);
-  await setQuickLinks(links);
-  quickLinks = links;
-  await renderQuickLinks();
-  send({ type: 'syncNow' }).catch(() => {}); // mirror delete to server
+  return submitQuickLinkOperation({ type: 'delete', index });
 }
 
 quickLinksEl.addEventListener('click', async (e) => {
@@ -203,15 +213,9 @@ quickLinksEl.addEventListener('drop', async (e) => {
   const from = dragIndex;
   dragIndex = -1;
   if (!target) return;
-  const links = await getQuickLinks();
-  if (from >= links.length) return;
-  const [moved] = links.splice(from, 1);
   let insertAt = target.index + (target.before ? 0 : 1);
   if (from < insertAt) insertAt--; // adjust for the removal shift
-  links.splice(Math.max(0, Math.min(insertAt, links.length)), 0, moved);
-  await setQuickLinks(links);
-  quickLinks = links;
-  await renderQuickLinks();
+  await submitQuickLinkOperation({ type: 'reorder', from, to: insertAt });
 });
 
 quickLinksEl.addEventListener('dragend', () => {
@@ -264,8 +268,8 @@ $('#btn-quick-save').addEventListener('click', async (e) => {
   const saveBtn = e.currentTarget;
   saveBtn.disabled = true;
   try {
-    const ok = await saveQuickLink(title, url);
-    if (ok) {
+    const result = await saveQuickLink(title, url);
+    if (result?.ok || result?.conflict) {
       closeQuickModal();
     } else {
       $('#quick-url').style.borderColor = 'var(--danger)';

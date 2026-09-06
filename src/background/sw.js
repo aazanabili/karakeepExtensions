@@ -1,6 +1,6 @@
 // Service worker (MV3, ES modules): event debouncing, offline retry, badge, message bus.
 
-import { runSync, refreshCache, restoreList } from './sync.js';
+import { runSync, refreshCache, restoreList, mutateQuickLinks } from './sync.js';
 import * as S from '../lib/settings.js';
 
 const DEBOUNCE_MS = 2500;
@@ -9,6 +9,13 @@ const RESTORE_LOCK_MS = 30000;
 
 let debounceTimer = null;
 let restoringNow = false; // in-memory fast path
+let quickLinkQueue = Promise.resolve();
+
+function queueQuickLinkOperation(op) {
+  const result = quickLinkQueue.then(() => mutateQuickLinks(op));
+  quickLinkQueue = result.catch(() => {});
+  return result;
+}
 
 async function isRestoring() {
   if (restoringNow) return true;
@@ -105,6 +112,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
       case 'refreshCache':
         return await refreshCache();
+      case 'quickLinkOp':
+        return await queueQuickLinkOperation(msg.op);
       case 'restore': {
         restoringNow = true;
         await chrome.storage.local.set({ [RESTORE_FLAG_KEY]: { until: Date.now() + RESTORE_LOCK_MS } });

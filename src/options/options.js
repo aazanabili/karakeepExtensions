@@ -153,7 +153,10 @@ $('#import-file').addEventListener('change', async (e) => {
   if (!file) return;
   try {
     const data = JSON.parse(await file.text());
-    const allowed = [K.SETTINGS, K.CACHE, K.META, K.ACTIVITY, K.MANAGED, K.KNOWN_FILES];
+    const allowed = [
+      K.SETTINGS, K.CACHE, K.META, K.ACTIVITY, K.MANAGED, K.KNOWN_FILES,
+      K.QUICK_LINKS, K.QUICK_LINKS_MIGRATED, K.SEARCH_ENGINE
+    ];
     const clean = {};
     for (const key of allowed) if (data[key] !== undefined) clean[key] = data[key];
     if (!Object.keys(clean).length) throw new Error('empty');

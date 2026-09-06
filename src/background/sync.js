@@ -5,6 +5,13 @@ import { normalizeUrl, isSyncableUrl } from '../lib/normalize.js';
 import * as S from '../lib/settings.js';
 import { KarakeepDriver } from '../lib/drivers/karakeep.js';
 import * as LocalFS from '../lib/drivers/localfs.js';
+import {
+  applyQuickLinkOperation,
+  normalizeQuickLinks,
+  orderedTitle,
+  quickLinksEqual,
+  stripOrderPrefix
+} from '../lib/quick-links.js';
 
 /**
  * Snapshot current browser state as Map<listName, {color, items:[{url,title,index}]}>.
@@ -15,6 +22,7 @@ import * as LocalFS from '../lib/drivers/localfs.js';
 export async function captureBrowserState() {
   const settings = await S.getSettings();
   const non = settings.nonListName || 'non';
+  const quickLinksName = settings.quickLinksListName || 'QuickLinks';
   const [tabs, groups] = await Promise.all([
     chrome.tabs.query({}),
     chrome.tabGroups.query({})
@@ -29,7 +37,9 @@ export async function captureBrowserState() {
     const url = normalizeUrl(tab.url);
     if (!url) continue;
     const group = (tab.groupId != null && tab.groupId !== -1) ? groupById.get(tab.groupId) : null;
-    const name = group?.title ? group.title : non;
+    const rawName = group?.title ? group.title : non;
+    // QuickLinks is reserved for manually managed links; keep tab groups separate.
+    const name = rawName === quickLinksName ? `${rawName} (Tabs)` : rawName;
     if (group?.title && meta[group.title]?.color !== group.color) {
       meta[group.title] = { color: group.color || '' };
       metaChanged = true;
@@ -142,14 +152,12 @@ export async function runSync(trigger = 'auto') {
   let lists;
   if (settings.driver === 'local') {
     stats = await mirrorWithLocal(state);
+    await refreshQuickLinksFromStorage(settings);
     lists = [...state].map(([name, l]) => toCacheList(name, l, meta, true));
   } else {
     const driver = new KarakeepDriver(settings.serverUrl, settings.apiKey);
     stats = await mirrorWithKarakeep(driver, state, settings);
-
-    // QuickLinks: server is read-reference, browser is write-reference.
-    // Pull from server -> merge with local -> push local back as canonical.
-    await syncQuickLinks(driver, quickLinksName);
+    await refreshQuickLinksFromStorage(settings);
 
     // Cache shows everything on the server: open lists (live) + archived ones.
     const allLists = await driver.getLists();
@@ -181,90 +189,163 @@ export async function runSync(trigger = 'auto') {
   return { ok: true, ...stats };
 }
 
-/**
- * QuickLinks sync: server = read-reference, browser = write-reference.
- * 1. Pull server items -> store locally (server wins on conflicts for display)
- * 2. Push local additions/deletions back to server (mirror)
- * 3. Numbered prefixes preserve order across devices
- */
-async function syncQuickLinks(driver, listName) {
-  const local = await S.getQuickLinks();
-
-  // Ensure the protected list exists on the server.
-  const allLists = await driver.getLists();
-  let list = allLists.find((l) => l.name === listName);
-  if (!list) list = await driver.createList(listName);
-
-  const serverBms = await driver.getListBookmarks(list.id);
-
-  // Parse server items: strip numbered prefix (order = prefix value).
-  const serverItems = serverBms
-    .map((b) => {
-      const url = normalizeUrl(b.url) || b.url;
-      const m = /^(\d+)\s*-\s*(.*)$/.exec(b.title || '');
-      return { id: b.id, url, order: m ? Number(m[1]) : 9999, title: m ? m[2] : (b.title || '') };
-    })
-    .sort((a, b) => a.order - b.order);
-
-  const serverUrls = new Set(serverItems.map((i) => i.url));
-  const localUrls = new Set(local.map((l) => normalizeUrl(l.url) || l.url));
-
-  // Items to upload (local-only) and pull (server-only).
-  const toUpload = local.filter((l) => !serverUrls.has(normalizeUrl(l.url) || l.url));
-  const toPull = serverItems.filter((i) => !localUrls.has(i.url));
-
-  // Canonical list = local order + pulled items appended at end.
-  const canonical = [
-    ...local.map((l) => ({ ...l, url: normalizeUrl(l.url) || l.url })),
-    ...toPull.map((p) => ({ id: crypto.randomUUID(), url: p.url, title: p.title, createdAt: Date.now() }))
-  ];
-
-  // Dedup by URL, keep first.
-  const seen = new Set();
-  const deduped = canonical.filter((l) => {
-    if (seen.has(l.url)) return false;
-    seen.add(l.url);
-    return true;
-  });
-
-  const changed = toUpload.length > 0 || toPull.length > 0 || deduped.length !== local.length;
-
-  if (changed) {
-    await S.setQuickLinks(deduped);
-    await pushQuickLinksToServer(driver, list.id, deduped, serverItems);
-  }
-
-  return { links: deduped, changed };
+function hydrateRemoteLinks(remote, local) {
+  const localByUrl = new Map(normalizeQuickLinks(local).map((link) => [link.url, link]));
+  return normalizeQuickLinks(remote).map((link) => ({
+    ...link,
+    id: localByUrl.get(link.url)?.id || link.id,
+    createdAt: localByUrl.get(link.url)?.createdAt || link.createdAt
+  }));
 }
 
-/** Push local quick links to server as full mirror (numbered titles = order). */
-async function pushQuickLinksToServer(driver, listId, links, knownServerItems = null) {
-  const serverItems = knownServerItems || (await driver.getListBookmarks(listId))
-    .map((b) => ({ id: b.id, url: normalizeUrl(b.url) || b.url, title: b.title || '' }));
-  const serverByUrl = new Map(serverItems.map((i) => [i.url, i]));
-  const desiredUrls = new Set(links.map((l) => normalizeUrl(l.url) || l.url));
+async function assertLocalFolder() {
+  const handle = await LocalFS.loadHandle();
+  if (!handle) throw new Error('NO_FOLDER');
+  if (await LocalFS.queryPerm(handle) !== 'granted') throw new Error('NEED_PERMISSION');
+  return handle;
+}
 
-  // Add new + update titles with numbered prefix for order.
-  for (let i = 0; i < links.length; i++) {
-    const url = normalizeUrl(links[i].url) || links[i].url;
-    const titled = `${String(i + 1).padStart(2, '0')} - ${links[i].title || links[i].url}`;
-    const existing = serverByUrl.get(url);
+async function readQuickLinksStorage(settings) {
+  const listName = settings.quickLinksListName || 'QuickLinks';
+  if (settings.driver === 'local') {
+    const handle = await assertLocalFolder();
+    const fileName = LocalFS.sanitizeFileName(listName) + '.txt';
+    const remote = await LocalFS.readQuickLinks(handle, fileName);
+    return {
+      ...remote,
+      links: normalizeQuickLinks(remote.links),
+      storageId: `local:${handle.name}:${fileName}`,
+      context: { kind: 'local', handle, fileName }
+    };
+  }
+
+  const driver = new KarakeepDriver(settings.serverUrl, settings.apiKey);
+  const allLists = await driver.getLists();
+  const list = allLists.find((item) => item.name === listName);
+  if (!list) {
+    return {
+      exists: false,
+      links: [],
+      storageId: `karakeep:${driver.base}:${listName}`,
+      context: { kind: 'karakeep', driver, listName, list: null, bookmarks: [] }
+    };
+  }
+  const bookmarks = await driver.getListBookmarks(list.id);
+  const links = bookmarks
+    .map((bookmark) => {
+      const parsed = stripOrderPrefix(bookmark.title);
+      return { ...bookmark, title: parsed.title, order: parsed.order };
+    })
+    .sort((a, b) => a.order - b.order);
+  return {
+    exists: true,
+    links: normalizeQuickLinks(links),
+    storageId: `karakeep:${driver.base}:${listName}`,
+    context: { kind: 'karakeep', driver, listName, list, bookmarks }
+  };
+}
+
+async function writeQuickLinksStorage(snapshot, links) {
+  const normalized = normalizeQuickLinks(links);
+  if (snapshot.context.kind === 'local') {
+    await LocalFS.writeQuickLinks(snapshot.context.handle, snapshot.context.fileName, normalized);
+    return;
+  }
+
+  const { driver, listName } = snapshot.context;
+  let list = snapshot.context.list;
+  if (!list) list = await driver.createList(listName);
+  const bookmarks = snapshot.context.bookmarks || [];
+  const currentByUrl = new Map(bookmarks.map((item) => [normalizeUrl(item.url) || item.url, item]));
+  const desiredUrls = new Set(normalized.map((item) => item.url));
+
+  for (let index = 0; index < normalized.length; index++) {
+    const link = normalized[index];
+    const title = orderedTitle(index, link);
+    const existing = currentByUrl.get(link.url);
     if (!existing) {
-      const bm = await driver.createLink(url, titled);
-      await driver.addToList(listId, bm.id);
-    } else if (existing.title !== titled) {
+      const bookmark = await driver.createLink(link.url, title);
+      await driver.addToList(list.id, bookmark.id);
+      await driver.req(`/bookmarks/${encodeURIComponent(bookmark.id)}`, {
+        method: 'PATCH', body: { title }
+      });
+    } else if (existing.title !== title) {
       await driver.req(`/bookmarks/${encodeURIComponent(existing.id)}`, {
-        method: 'PATCH', body: { title: titled }
-      }).catch(() => {});
+        method: 'PATCH', body: { title }
+      });
     }
   }
 
-  // Remove server items not present locally (mirror delete).
-  for (const item of serverItems) {
-    if (!desiredUrls.has(item.url)) {
-      await driver.removeFromList(listId, item.id).catch(() => {});
-    }
+  for (const bookmark of bookmarks) {
+    const url = normalizeUrl(bookmark.url) || bookmark.url;
+    if (!desiredUrls.has(url)) await driver.removeFromList(list.id, bookmark.id);
   }
+}
+
+async function refreshQuickLinksFromStorage(settings) {
+  const local = normalizeQuickLinks(await S.getQuickLinks());
+  const remote = await readQuickLinksStorage(settings);
+  const migrations = await S.getQuickLinksMigrations();
+
+  if (!migrations.includes(remote.storageId)) {
+    // One-time migration approved by the user: preserve both sides without data loss.
+    // Existing browser links come first so their edits/order are uploaded once.
+    const localUrls = new Set(local.map((link) => link.url));
+    const merged = normalizeQuickLinks([
+      ...local,
+      ...remote.links.filter((link) => !localUrls.has(link.url))
+    ]);
+    if (!remote.exists || !quickLinksEqual(remote.links, merged)) {
+      await writeQuickLinksStorage(remote, merged);
+    }
+    await S.setQuickLinks(hydrateRemoteLinks(merged, local));
+    await S.markQuickLinksMigrated(remote.storageId);
+    return merged;
+  }
+
+  const adopted = hydrateRemoteLinks(remote.links, local);
+  if (!quickLinksEqual(local, adopted)) await S.setQuickLinks(adopted);
+  return adopted;
+}
+
+/**
+ * Optimistic concurrency for QuickLinks. Storage always wins a conflict.
+ * The local cache is never changed until the remote preflight passes.
+ */
+export async function mutateQuickLinks(op) {
+  const settings = await S.getSettings();
+  const beforeRefresh = normalizeQuickLinks(await S.getQuickLinks());
+  await refreshQuickLinksFromStorage(settings);
+  const local = normalizeQuickLinks(await S.getQuickLinks());
+
+  // Refresh found a newer storage version (or merged first-run data): cancel this operation.
+  if (!quickLinksEqual(beforeRefresh, local)) {
+    await S.logActivity('conflict', 'QuickLinks: operation cancelled before write');
+    return { ok: false, conflict: true, links: local };
+  }
+
+  const baseline = await readQuickLinksStorage(settings);
+
+  if (!quickLinksEqual(local, baseline.links)) {
+    const adopted = hydrateRemoteLinks(baseline.links, local);
+    await S.setQuickLinks(adopted);
+    await S.logActivity('conflict', 'QuickLinks: storage version adopted');
+    return { ok: false, conflict: true, links: adopted };
+  }
+
+  const next = applyQuickLinkOperation(local, op);
+  const fresh = await readQuickLinksStorage(settings);
+  if (!quickLinksEqual(baseline.links, fresh.links)) {
+    const adopted = hydrateRemoteLinks(fresh.links, local);
+    await S.setQuickLinks(adopted);
+    await S.logActivity('conflict', 'QuickLinks: operation cancelled');
+    return { ok: false, conflict: true, links: adopted };
+  }
+
+  await writeQuickLinksStorage(fresh, next);
+  await S.setQuickLinks(next);
+  await S.logActivity('quick-link', op.type);
+  return { ok: true, conflict: false, links: next };
 }
 
 /** Pull fresh data from the active driver into the cache (for the New Tab page). */
@@ -279,7 +360,9 @@ export async function refreshCache() {
     if (!handle) return { ok: false, reason: 'NO_FOLDER' };
     if (await LocalFS.queryPerm(handle) !== 'granted') return { ok: false, reason: 'NEED_PERMISSION' };
     const raw = await LocalFS.readAllLists(handle);
-    lists = raw.map((l) => ({ name: l.name, items: l.items, updatedAt: l.updatedAt, live: true }));
+    lists = raw
+      .filter((l) => l.name !== quickLinksName)
+      .map((l) => ({ name: l.name, items: l.items, updatedAt: l.updatedAt, live: true }));
   } else {
     if (!settings.serverUrl || !settings.apiKey) return { ok: false, reason: 'NOT_CONFIGURED' };
     const driver = new KarakeepDriver(settings.serverUrl, settings.apiKey);
@@ -305,6 +388,7 @@ export async function refreshCache() {
 
   lists = lists.map((l) => ({ ...l, color: meta[l.name]?.color || '' }));
   await S.saveCache({ lists, fetchedAt: Date.now(), driver: settings.driver });
+  await refreshQuickLinksFromStorage(settings);
   return { ok: true, count: lists.length };
 }
 

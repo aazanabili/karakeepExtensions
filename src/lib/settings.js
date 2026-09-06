@@ -11,7 +11,8 @@ export const K = {
   KNOWN_FILES: 'knownFiles', // [fileName] — TXT files we created (mirror-safe deletion)
   PENDING_AT: 'pendingSyncAt',
   QUICK_LINKS: 'quickLinks', // [{id, title, url, createdAt}] — local + synced as protected list
-  SEARCH_ENGINE: 'searchEngine' // id of default engine
+  SEARCH_ENGINE: 'searchEngine', // id of default engine
+  QUICK_LINKS_MIGRATED: 'quickLinksMigrated'
 };
 
 export const DEFAULT_SETTINGS = {
@@ -105,6 +106,17 @@ export async function getQuickLinks() {
 
 export async function setQuickLinks(links) {
   await chrome.storage.local.set({ [K.QUICK_LINKS]: links });
+}
+
+export async function getQuickLinksMigrations() {
+  const o = await chrome.storage.local.get(K.QUICK_LINKS_MIGRATED);
+  return o[K.QUICK_LINKS_MIGRATED] || [];
+}
+
+export async function markQuickLinksMigrated(storageId) {
+  const migrated = new Set(await getQuickLinksMigrations());
+  migrated.add(storageId);
+  await chrome.storage.local.set({ [K.QUICK_LINKS_MIGRATED]: [...migrated] });
 }
 
 export async function getSearchEngine() {
