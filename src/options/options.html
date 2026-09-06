@@ -12,6 +12,7 @@
 
     <section>
       <h2 data-i18n="driverLabel">Storage driver</h2>
+      <p class="hint" data-i18n="driverExclusiveHint"></p>
       <label class="radio"><input type="radio" name="driver" value="karakeep"> <span data-i18n="driverKarakeep">Karakeep server</span></label>
       <label class="radio"><input type="radio" name="driver" value="local"> <span data-i18n="driverLocal">Local TXT folder</span></label>
     </section>
@@ -32,7 +33,12 @@
     <section id="fs-local" hidden>
       <button id="btn-folder" data-i18n="pickFolder">Choose folder</button>
       <span id="folder-status" class="test-result"></span>
-      <p class="hint" data-i18n="folderNeeded"></p>
+      <p class="hint"><strong data-i18n="folderHint"></strong></p>
+      <p class="hint muted-small" data-i18n="chooseFolderTitle"></p>
+      <div class="perm-steps">
+        <p class="hint"><strong data-i18n="permanentAccessSteps"></strong></p>
+        <button id="btn-ext-settings" class="small-btn" data-i18n="openExtSettings">Open extension settings</button>
+      </div>
     </section>
 
     <section>

@@ -98,15 +98,17 @@ $('#btn-test').addEventListener('click', async () => {
 async function refreshFolderStatus() {
   const el = $('#folder-status');
   const handle = await loadHandle();
-  if (!handle) { el.textContent = ''; return; }
+  if (!handle) { el.textContent = ''; el.onclick = null; return; }
   const perm = await queryPerm(handle);
   if (perm === 'granted') {
     el.textContent = `${t('folderOk')}: ${handle.name}`;
     el.className = 'test-result ok-text';
+    el.onclick = null;
+    el.style.cursor = 'default';
   } else {
-    el.textContent = `${handle.name} — ${t('folderNeeded')}`;
+    // 'prompt' or 'denied' — needs a user gesture to (re)grant
+    el.textContent = `${handle.name} — ${t('permOnce')}`;
     el.className = 'test-result err-text';
-    // One click anywhere on the status re-requests permission (needs user gesture).
     el.style.cursor = 'pointer';
     el.onclick = async () => {
       if ((await requestPerm(handle)) === 'granted') refreshFolderStatus();
@@ -123,6 +125,14 @@ $('#btn-folder').addEventListener('click', async () => {
   } catch {
     // user cancelled
   }
+});
+
+// Open chrome://extensions page for THIS extension so user can grant permanent
+// file access manually (the only reliable persistent method for extensions).
+$('#btn-ext-settings').addEventListener('click', async () => {
+  const isEdge = navigator.userAgent.includes('Edg/');
+  const url = (isEdge ? 'edge://extensions/' : 'chrome://extensions/') + '?id=' + chrome.runtime.id;
+  await chrome.tabs.create({ url });
 });
 
 // ---- Backup (export / import) -----------------------------------------------------

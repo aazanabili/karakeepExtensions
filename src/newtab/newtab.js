@@ -411,7 +411,7 @@ async function checkReadiness() {
   if (settings.driver === 'local') {
     const res = await send({ type: 'refreshCache' });
     if (!res?.ok && (res.reason === 'NEED_PERMISSION' || res.reason === 'NO_FOLDER')) {
-      showBanner(t('folderNeeded'), t('grantRetry'), async () => {
+      showBanner(`${t('folderNeeded')} ${t('folderHint')}`, t('grantRetry'), async () => {
         let handle = await loadHandle();
         if (!handle && 'showDirectoryPicker' in window) {
           try { handle = await window.showDirectoryPicker({ mode: 'readwrite' }); } catch { return; }
