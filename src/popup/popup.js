@@ -15,6 +15,9 @@ function esc(s) {
 function render(state) {
   const { sync, activity, settings } = state;
   const pill = $('#state-pill');
+  const error = $('#sync-error');
+  error.hidden = true;
+  error.textContent = '';
 
   const configured = settings.driver === 'local' || (settings.serverUrl && settings.apiKey);
   if (!configured) {
@@ -24,6 +27,8 @@ function render(state) {
     pill.textContent = t('syncError');
     pill.className = 'pill error';
     pill.title = sync.lastError;
+    error.textContent = sync.lastError;
+    error.hidden = false;
   } else if (sync.dirty) {
     pill.textContent = t('syncPending');
     pill.className = 'pill pending';

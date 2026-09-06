@@ -4,7 +4,7 @@ import { normalizeUrl } from '../lib/normalize.js';
 import * as S from '../lib/settings.js';
 import { KarakeepDriver } from '../lib/drivers/karakeep.js';
 import * as LocalFS from '../lib/drivers/localfs.js';
-import { captureBrowserSession, parseSessionDescription } from './session.js';
+import { captureBrowserSession, parseSessionDescription, sessionOrderKey } from './session.js';
 import {
   applyQuickLinkOperation,
   normalizeQuickLinks,
@@ -192,8 +192,11 @@ export async function refreshCache() {
       const text = await LocalFS.readText(handle, '_TabSyncSession.txt');
       manifest = text ? JSON.parse(text) : null;
     } catch { /* fall back to legacy files */ }
-    lists = Array.isArray(manifest?.lists)
-      ? manifest.lists
+    if (Array.isArray(manifest?.lists)) {
+      const registeredFiles = new Set(manifest.lists
+        .filter((entry) => typeof entry.fileName === 'string')
+        .map((entry) => entry.fileName.toLowerCase()));
+      lists = manifest.lists
         .filter((entry) => typeof entry.name === 'string' && typeof entry.fileName === 'string')
         .map((entry) => {
           const file = rawByFile.get(entry.fileName.toLowerCase());
@@ -204,27 +207,49 @@ export async function refreshCache() {
             updatedAt: file?.updatedAt || Date.now(),
             live: liveNames.has(entry.name)
           };
+        });
+      lists.push(...raw
+        .filter((list) => {
+          const fileName = `${list.name}.txt`.toLowerCase();
+          return !registeredFiles.has(fileName) &&
+            fileName !== `${LocalFS.sanitizeFileName(quickLinksName)}.txt`.toLowerCase() &&
+            fileName !== 'archive.txt' &&
+            !list.name.startsWith('_');
         })
-      : raw
-        .filter((list) => list.name !== quickLinksName && list.name !== 'Archive' && !list.name.startsWith('_'))
+        .map((list) => ({ ...list, live: liveNames.has(list.name) })));
+    } else {
+      lists = raw
+        .filter((list) => {
+          const fileName = `${list.name}.txt`.toLowerCase();
+          return fileName !== `${LocalFS.sanitizeFileName(quickLinksName)}.txt`.toLowerCase() &&
+            fileName !== 'archive.txt' &&
+            !list.name.startsWith('_');
+        })
         .map((list) => ({ ...list, live: liveNames.has(list.name) }));
+    }
   } else {
     if (!settings.serverUrl || !settings.apiKey) return { ok: false, reason: 'NOT_CONFIGURED' };
     const driver = new KarakeepDriver(settings.serverUrl, settings.apiKey);
     const all = await driver.getLists();
     for (const l of all) {
-      if (l.name === quickLinksName) continue; // rendered separately
-      const metadata = parseSessionDescription(l.description);
-      if (!metadata) continue;
+      if (l.name === quickLinksName || l.name === 'Archive' || l.name.startsWith('_TabSync')) continue;
+      const metadata = parseSessionDescription(l.description) || {
+        kind: l.name === (settings.nonListName || 'non') ? 'non' : 'group',
+        color: '',
+        order: []
+      };
       const bms = await driver.getListBookmarks(l.id);
-      const orderById = new Map(metadata.order.map((id, index) => [id, index]));
+      const compactOrder = metadata.order.every((key) => key.length === 4);
+      const orderByKey = new Map(metadata.order.map((key, index) => [key, index]));
       const ordered = bms
         .map((bookmark, sourceIndex) => {
           const parsed = stripOrderPrefix(bookmark.title);
           return {
             ...bookmark,
             title: parsed.title,
-            order: orderById.has(bookmark.id) ? orderById.get(bookmark.id) : parsed.order,
+            order: orderByKey.get(compactOrder
+              ? sessionOrderKey(normalizeUrl(bookmark.url) || bookmark.url)
+              : bookmark.id) ?? parsed.order,
             sourceIndex
           };
         })

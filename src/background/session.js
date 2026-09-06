@@ -14,23 +14,45 @@ import { stripOrderPrefix } from '../lib/quick-links.js';
 export const SESSION_MARKER = 'tabsync:session:v1';
 const SESSION_MANIFEST = '_TabSyncSession.txt';
 const RESTORE_FLAG_KEY = 'restoring';
+const LIST_DESCRIPTION_LIMIT = 500;
+const ORDER_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 const COLORS = new Set(['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange']);
 
-function listDescription(list, orderIds = []) {
-  const order = orderIds.map((id) => encodeURIComponent(id)).join(',');
-  return `${SESSION_MARKER};kind=${list.kind};color=${list.color || ''};order=${order}`;
+export function sessionOrderKey(url) {
+  let hash = 2166136261;
+  for (const char of url) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  const value = hash >>> 0;
+  return [18, 12, 6, 0].map((shift) => ORDER_ALPHABET[(value >>> shift) & 63]).join('');
+}
+
+function listDescription(list, orderKeys = [], previousDescription = '') {
+  const fixed = `${SESSION_MARKER};fmt=c4;kind=${list.kind};color=${list.color || ''};order=`;
+  const markerIndex = previousDescription.indexOf(SESSION_MARKER);
+  const userDescription = (markerIndex >= 0
+    ? previousDescription.slice(0, markerIndex)
+    : previousDescription).trimEnd();
+  const separatorLength = userDescription ? 1 : 0;
+  const availableForOrder = LIST_DESCRIPTION_LIMIT - userDescription.length - separatorLength - fixed.length;
+  if (availableForOrder < 0) return previousDescription;
+  const metadata = fixed + orderKeys.slice(0, Math.floor(availableForOrder / 4)).join('');
+  return userDescription ? `${userDescription}\n${metadata}` : metadata;
 }
 
 export function parseSessionDescription(description) {
-  if (!description?.startsWith(SESSION_MARKER)) return null;
+  const markerIndex = description?.indexOf(SESSION_MARKER) ?? -1;
+  if (markerIndex < 0) return null;
   const fields = {};
-  for (const part of description.split(';').slice(1)) {
+  for (const part of description.slice(markerIndex).split(';').slice(1)) {
     const separator = part.indexOf('=');
     if (separator > 0) fields[part.slice(0, separator)] = part.slice(separator + 1);
   }
-  const order = (fields.order || '').split(',').filter(Boolean).map((id) => {
+  const rawOrder = fields.order || '';
+  const decodeLegacy = (id) => {
     try { return decodeURIComponent(id); } catch { return id; }
-  });
+  };
+  const order = fields.fmt === 'c4'
+    ? rawOrder.match(/.{4}/g) || []
+    : rawOrder.split(',').filter(Boolean).map(decodeLegacy);
   return { kind: fields.kind === 'non' ? 'non' : 'group', color: fields.color || '', order };
 }
 
@@ -70,32 +92,34 @@ async function readKarakeepSession(settings, browserState) {
   const driver = new KarakeepDriver(settings.serverUrl, settings.apiKey);
   const allLists = await driver.getLists();
   const quickName = settings.quickLinksListName || 'QuickLinks';
-  const knownNames = new Set(await S.getManaged());
-
-  // One-time migration: mark lists managed by older TabSync versions.
-  for (const list of allLists) {
-    if (list.name === quickName || parseSessionDescription(list.description) || !knownNames.has(list.name)) continue;
-    const browserList = browserState.lists.find((item) => item.name === list.name);
-    const kind = browserList?.kind || (list.name === (settings.nonListName || 'non') ? 'non' : 'group');
-    const color = browserList?.color || '';
-    list.description = listDescription({ kind, color });
-    await driver.updateList(list.id, { description: list.description });
-  }
+  const archiveName = 'Archive';
+  const quickList = allLists.find((list) => list.name === quickName);
+  const protectedUrls = new Set(quickList
+    ? (await driver.getListBookmarks(quickList.id)).map((bookmark) => normalizeUrl(bookmark.url) || bookmark.url)
+    : []);
 
   const lists = [];
   const context = new Map();
   for (const list of allLists) {
-    const metadata = parseSessionDescription(list.description);
-    if (!metadata) continue;
+    if (list.name === quickName || list.name === archiveName || list.name.startsWith('_TabSync')) continue;
+    const browserList = browserState.lists.find((item) => item.name === list.name);
+    const metadata = parseSessionDescription(list.description) || {
+      kind: list.name === (settings.nonListName || 'non') ? 'non' : 'group',
+      color: browserList?.color || '',
+      order: []
+    };
     const bookmarks = await driver.getListBookmarks(list.id);
-    const orderById = new Map(metadata.order.map((id, index) => [id, index]));
+    const compactOrder = metadata.order.every((key) => key.length === 4);
+    const orderByKey = new Map(metadata.order.map((key, index) => [key, index]));
     const tabs = bookmarks
       .map((bookmark, sourceIndex) => {
         const parsed = stripOrderPrefix(bookmark.title);
         return {
           ...bookmark,
           title: parsed.title,
-          order: orderById.has(bookmark.id) ? orderById.get(bookmark.id) : parsed.order,
+          order: orderByKey.get(compactOrder
+            ? sessionOrderKey(normalizeUrl(bookmark.url) || bookmark.url)
+            : bookmark.id) ?? parsed.order,
           sourceIndex
         };
       })
@@ -104,15 +128,12 @@ async function readKarakeepSession(settings, browserState) {
     lists.push({ name: list.name, ...metadata, tabs });
     context.set(list.name, { list, bookmarks });
   }
-  const unmanagedNames = new Set(allLists
-    .filter((list) => list.name !== quickName && !parseSessionDescription(list.description))
-    .map((list) => list.name));
   return {
     kind: 'karakeep',
     driver,
     state: normalizeSessionState({ version: 1, lists }),
     context,
-    unmanagedNames
+    protectedUrls
   };
 }
 
@@ -125,22 +146,39 @@ async function readLocalSession(settings) {
   let manifest = null;
   try { manifest = manifestText ? JSON.parse(manifestText) : null; } catch { /* migrate below */ }
   const files = await LocalFS.readAllLists(handle);
-  const byName = new Map(files.map((file) => [file.name, file]));
-
-  if (!manifest?.lists) {
-    const knownFiles = new Set((await S.getKnownFiles()).map((name) => String(name).toLowerCase()));
-    manifest = {
-      version: 1,
-      lists: files
-        .filter((file) => knownFiles.has(`${file.name}.txt`.toLowerCase()))
-        .filter((file) => file.name !== quickName && file.name !== 'Archive' && !file.name.startsWith('_'))
-        .map((file) => ({
-          name: file.name,
-          kind: file.name === (settings.nonListName || 'non') ? 'non' : 'group',
-          color: '',
-          fileName: LocalFS.sanitizeFileName(file.name) + '.txt'
-        }))
-    };
+  const byFile = new Map(files.map((file) => [`${file.name}.txt`.toLowerCase(), file]));
+  const reservedFiles = new Set([
+    SESSION_MANIFEST.toLowerCase(),
+    'archive.txt',
+    `${LocalFS.sanitizeFileName(quickName)}.txt`.toLowerCase()
+  ]);
+  const eligibleFiles = files.filter((file) => {
+    const fileName = `${file.name}.txt`.toLowerCase();
+    return !reservedFiles.has(fileName) && !file.name.startsWith('_');
+  });
+  const validEntries = Array.isArray(manifest?.lists)
+    ? manifest.lists.filter((entry) =>
+      typeof entry.name === 'string' &&
+      typeof entry.fileName === 'string' &&
+      !reservedFiles.has(entry.fileName.toLowerCase()) &&
+      byFile.has(entry.fileName.toLowerCase()))
+    : [];
+  const registeredFiles = new Set(validEntries.map((entry) => entry.fileName.toLowerCase()));
+  let manifestChanged = !Array.isArray(manifest?.lists) || validEntries.length !== manifest.lists.length;
+  for (const file of eligibleFiles) {
+    const fileName = `${file.name}.txt`;
+    if (registeredFiles.has(fileName.toLowerCase())) continue;
+    validEntries.push({
+      name: file.name,
+      kind: file.name === (settings.nonListName || 'non') ? 'non' : 'group',
+      color: '',
+      fileName
+    });
+    registeredFiles.add(fileName.toLowerCase());
+    manifestChanged = true;
+  }
+  manifest = { version: 1, lists: validEntries };
+  if (manifestChanged) {
     await LocalFS.writeText(handle, SESSION_MANIFEST, JSON.stringify(manifest, null, 2));
   }
 
@@ -148,7 +186,7 @@ async function readLocalSession(settings) {
     name: entry.name,
     kind: entry.kind,
     color: entry.color || '',
-    tabs: (byName.get(entry.fileName.replace(/\.txt$/i, ''))?.items || [])
+    tabs: (byFile.get(entry.fileName.toLowerCase())?.items || [])
   }));
   return { kind: 'local', handle, manifest, state: normalizeSessionState({ version: 1, lists }) };
 }
@@ -159,14 +197,37 @@ async function readSessionStorage(settings, browserState) {
     : readKarakeepSession(settings, browserState);
 }
 
+function isReadOnlyKarakeepEntry(entry) {
+  const list = entry?.list;
+  return list?.type === 'smart' || (list?.userRole && !['owner', 'editor'].includes(list.userRole));
+}
+
+function maskReadOnlyKarakeepChanges(snapshot, currentInput) {
+  if (snapshot.kind !== 'karakeep') return normalizeSessionState(currentInput);
+  const current = normalizeSessionState(currentInput);
+  const renames = detectSessionRenames(snapshot.state, current);
+  for (const [name, entry] of snapshot.context) {
+    if (!isReadOnlyKarakeepEntry(entry)) continue;
+    const stored = snapshot.state.lists.find((list) => list.name === name);
+    if (!stored) continue;
+    const renamedTarget = renames.get(name);
+    current.lists = current.lists.filter((list) => list.name !== name && list.name !== renamedTarget);
+    current.lists.push(structuredClone(stored));
+  }
+  return normalizeSessionState(current);
+}
+
 async function writeKarakeepSession(snapshot, desiredInput, archives) {
   const desired = normalizeSessionState(desiredInput);
   const renames = detectSessionRenames(snapshot.state, desired);
+  const retainedUrls = new Set([
+    ...(snapshot.protectedUrls || []),
+    ...desired.lists.flatMap((list) => list.tabs.map((tab) => tab.url))
+  ]);
 
   for (const [oldName, newName] of renames) {
     const entry = snapshot.context.get(oldName);
-    if (!entry || snapshot.context.has(newName)) continue;
-    if (snapshot.unmanagedNames.has(newName)) throw new Error(`SESSION_LIST_NAME_CONFLICT: ${newName}`);
+    if (!entry || isReadOnlyKarakeepEntry(entry) || snapshot.context.has(newName)) continue;
     await snapshot.driver.updateList(entry.list.id, {
       name: newName
     });
@@ -177,10 +238,8 @@ async function writeKarakeepSession(snapshot, desiredInput, archives) {
 
   for (const desiredList of desired.lists) {
     let entry = snapshot.context.get(desiredList.name);
+    if (isReadOnlyKarakeepEntry(entry)) continue;
     if (!entry) {
-      if (snapshot.unmanagedNames.has(desiredList.name)) {
-        throw new Error(`SESSION_LIST_NAME_CONFLICT: ${desiredList.name}`);
-      }
       let list = await snapshot.driver.createList(desiredList.name, {
         description: listDescription(desiredList),
         icon: '🗂️'
@@ -189,7 +248,8 @@ async function writeKarakeepSession(snapshot, desiredInput, archives) {
         list = (await snapshot.driver.getLists()).find((item) => item.id === list.id) || list;
       }
       if (!parseSessionDescription(list.description)) {
-        throw new Error(`SESSION_LIST_NAME_CONFLICT: ${desiredList.name}`);
+        list.description = listDescription(desiredList, [], list.description || '');
+        await snapshot.driver.updateList(list.id, { description: list.description });
       }
       entry = { list, bookmarks: [] };
       snapshot.context.set(desiredList.name, entry);
@@ -198,7 +258,7 @@ async function writeKarakeepSession(snapshot, desiredInput, archives) {
     const current = await snapshot.driver.getListBookmarks(entry.list.id);
     const currentByUrl = new Map(current.map((bookmark) => [normalizeUrl(bookmark.url) || bookmark.url, bookmark]));
     const desiredUrls = new Set(desiredList.tabs.map((tab) => tab.url));
-    const orderIds = [];
+    const orderKeys = [];
     const sourceNames = new Set([desiredList.name]);
     for (const [oldName, newName] of renames) {
       if (newName === desiredList.name) sourceNames.add(oldName);
@@ -212,14 +272,14 @@ async function writeKarakeepSession(snapshot, desiredInput, archives) {
       if (!existing) {
         const bookmark = await snapshot.driver.createLink(tab.url, tab.title);
         await snapshot.driver.addToList(entry.list.id, bookmark.id);
-        orderIds.push(bookmark.id);
+        orderKeys.push(sessionOrderKey(tab.url));
         if (bookmark.archived) {
           await snapshot.driver.req(`/bookmarks/${encodeURIComponent(bookmark.id)}`, {
             method: 'PATCH', body: { archived: false }
           });
         }
       } else {
-        orderIds.push(existing.id);
+        orderKeys.push(sessionOrderKey(tab.url));
       }
       if (existing?.archived) {
         await snapshot.driver.req(`/bookmarks/${encodeURIComponent(existing.id)}`, {
@@ -232,9 +292,11 @@ async function writeKarakeepSession(snapshot, desiredInput, archives) {
       const url = normalizeUrl(bookmark.url) || bookmark.url;
       if (desiredUrls.has(url)) continue;
       await snapshot.driver.removeFromList(entry.list.id, bookmark.id);
-      if (archiveUrls.has(url)) await snapshot.driver.archiveBookmark(bookmark.id);
+      if (archiveUrls.has(url) && !retainedUrls.has(url)) {
+        await snapshot.driver.archiveBookmark(bookmark.id);
+      }
     }
-    const description = listDescription(desiredList, orderIds);
+    const description = listDescription(desiredList, orderKeys, entry.list.description || '');
     if (entry.list.description !== description) {
       await snapshot.driver.updateList(entry.list.id, { description });
       entry.list.description = description;
@@ -244,10 +306,12 @@ async function writeKarakeepSession(snapshot, desiredInput, archives) {
   // Lists are never deleted. A missing non list is emptied; missing groups remain saved.
   const desiredNames = new Set(desired.lists.map((list) => list.name));
   for (const [name, entry] of snapshot.context) {
-    if (desiredNames.has(name) || parseSessionDescription(entry.list.description)?.kind !== 'non') continue;
+    const storedList = snapshot.state.lists.find((list) => list.name === name);
+    if (isReadOnlyKarakeepEntry(entry) || desiredNames.has(name) || storedList?.kind !== 'non') continue;
     for (const bookmark of await snapshot.driver.getListBookmarks(entry.list.id)) {
       await snapshot.driver.removeFromList(entry.list.id, bookmark.id);
-      if (archives.some((item) => item.url === (normalizeUrl(bookmark.url) || bookmark.url))) {
+      const url = normalizeUrl(bookmark.url) || bookmark.url;
+      if (!retainedUrls.has(url) && archives.some((item) => item.url === url)) {
         await snapshot.driver.archiveBookmark(bookmark.id);
       }
     }
@@ -316,29 +380,82 @@ async function reconcileBrowser(stateInput) {
   const state = normalizeSessionState(stateInput);
   await chrome.storage.local.set({ [RESTORE_FLAG_KEY]: { until: Date.now() + 120000 } });
   try {
-    let target = await chrome.windows.getLastFocused().catch(() => null);
-    if (!target || target.type !== 'normal') target = await chrome.windows.create({ focused: true });
-    const oldTabs = await chrome.tabs.query({});
-    const oldIds = oldTabs
-      .filter((tab) => !tab.pinned && isSyncableUrl(tab.url))
-      .map((tab) => tab.id);
+    const [oldTabs, oldGroups] = await Promise.all([chrome.tabs.query({}), chrome.tabGroups.query({})]);
+    const groupsById = new Map(oldGroups.map((group) => [group.id, group]));
+    const availableByUrl = new Map();
+    for (const tab of oldTabs) {
+      if (tab.pinned || !isSyncableUrl(tab.url)) continue;
+      const url = normalizeUrl(tab.url);
+      if (!url) continue;
+      if (!availableByUrl.has(url)) availableByUrl.set(url, []);
+      availableByUrl.get(url).push(tab);
+    }
 
+    const assignments = [];
+    const retainedIds = new Set();
     for (const list of state.lists) {
-      if (!list.tabs.length) continue;
       const ids = [];
-      for (const tab of list.tabs) {
-        const created = await chrome.tabs.create({ windowId: target.id, url: tab.url, active: false });
-        ids.push(created.id);
-      }
-      if (list.kind === 'group') {
-        const groupId = await chrome.tabs.group({ tabIds: ids, createProperties: { windowId: target.id } });
-        await chrome.tabGroups.update(groupId, {
-          title: list.name,
-          color: COLORS.has(list.color) ? list.color : 'blue'
+      for (const desiredTab of list.tabs) {
+        const candidates = availableByUrl.get(desiredTab.url) || [];
+        const preferredIndex = candidates.findIndex((tab) => {
+          const group = groupsById.get(tab.groupId);
+          return list.kind === 'group' ? group?.title === list.name : !group?.title;
         });
+        const existing = candidates.splice(preferredIndex >= 0 ? preferredIndex : 0, 1)[0];
+        if (existing) {
+          ids.push(existing.id);
+          retainedIds.add(existing.id);
+        } else {
+          ids.push(null);
+        }
+      }
+      assignments.push({ list, ids });
+    }
+
+    const totalDesired = assignments.reduce((total, item) => total + item.ids.length, 0);
+    let target = await chrome.windows.getLastFocused().catch(() => null);
+    if (totalDesired && (!target || target.type !== 'normal')) {
+      target = await chrome.windows.create({ focused: false });
+    }
+
+    if (target) {
+      for (const assignment of assignments) {
+        for (let index = 0; index < assignment.ids.length; index++) {
+          if (assignment.ids[index] !== null) continue;
+          const created = await chrome.tabs.create({
+            windowId: target.id,
+            url: assignment.list.tabs[index].url,
+            active: false
+          });
+          assignment.ids[index] = created.id;
+          retainedIds.add(created.id);
+        }
+      }
+
+      const groupedIds = assignments.flatMap((item) => item.ids)
+        .filter((id) => groupsById.has(oldTabs.find((tab) => tab.id === id)?.groupId));
+      if (groupedIds.length) await chrome.tabs.ungroup(groupedIds).catch(() => {});
+
+      const targetTabs = await chrome.tabs.query({ windowId: target.id });
+      let cursor = targetTabs.filter((tab) => tab.pinned).length;
+      for (const { list, ids } of assignments) {
+        if (!ids.length) continue;
+        await chrome.tabs.move(ids, { windowId: target.id, index: cursor });
+        if (list.kind === 'group') {
+          const groupId = await chrome.tabs.group({ tabIds: ids, createProperties: { windowId: target.id } });
+          await chrome.tabGroups.update(groupId, {
+            title: list.name,
+            color: COLORS.has(list.color) ? list.color : 'blue'
+          });
+        }
+        cursor += ids.length;
       }
     }
-    if (oldIds.length) await chrome.tabs.remove(oldIds).catch(() => {});
+
+    const extraIds = oldTabs
+      .filter((tab) => !tab.pinned && isSyncableUrl(tab.url) && !retainedIds.has(tab.id))
+      .map((tab) => tab.id);
+    if (extraIds.length) await chrome.tabs.remove(extraIds).catch(() => {});
   } finally {
     setTimeout(() => chrome.storage.local.remove(RESTORE_FLAG_KEY).catch(() => {}), 5000);
   }
@@ -362,18 +479,13 @@ function cacheFromState(state, browserState) {
 
 export async function synchronizeSession(trigger = 'auto', forceRestore = false) {
   const settings = await S.getSettings();
-  const current = await captureBrowserSession();
-  const snapshot = await readSessionStorage(settings, current);
+  let current = await captureBrowserSession();
+  let snapshot = await readSessionStorage(settings, current);
+  const afterRead = await captureBrowserSession();
+  if (!sessionStatesEqual(current, afterRead)) current = afterRead;
   const base = await S.getSessionSnapshot();
 
   if (!base) {
-    if (!snapshot.state.lists.length && current.lists.length) {
-      await writeSessionStorage(snapshot, current, []); // one-time migration from old behavior
-      await S.setSessionSnapshot(current);
-      await S.saveCache({ ...cacheFromState(current, current), driver: settings.driver });
-      await S.setSyncState({ dirty: false, lastSync: Date.now(), lastError: '', pendingSince: 0 });
-      return { ok: true, initialized: true };
-    }
     if (!sessionStatesEqual(current, snapshot.state)) await reconcileBrowser(snapshot.state);
     await S.setSessionSnapshot(snapshot.state);
     await S.saveCache({ ...cacheFromState(snapshot.state, snapshot.state), driver: settings.driver });
@@ -389,15 +501,50 @@ export async function synchronizeSession(trigger = 'auto', forceRestore = false)
     return { ok: true, restored: true };
   }
 
-  const archives = findTabsToArchive(base, current);
-  const desired = rebaseSessionChange(base, current, snapshot.state);
-  await writeSessionStorage(snapshot, desired, archives);
+  current = maskReadOnlyKarakeepChanges(snapshot, current);
+  let browserChanged = !sessionStatesEqual(base, current);
+  if (browserChanged) {
+    const preflight = await readSessionStorage(settings, current);
+    if (!sessionStatesEqual(snapshot.state, preflight.state)) {
+      snapshot = preflight;
+      current = maskReadOnlyKarakeepChanges(snapshot, current);
+      browserChanged = !sessionStatesEqual(base, current);
+    }
+  }
+  const remoteBeforeWrite = snapshot.state;
+  let archives = browserChanged ? findTabsToArchive(base, current) : [];
+  let desired = rebaseSessionChange(base, current, snapshot.state);
+  let wroteStorage = browserChanged;
+  if (wroteStorage) await writeSessionStorage(snapshot, desired, archives);
 
-  const conflict = !sessionStatesEqual(base, snapshot.state);
+  // A storage request can take long enough for another browser operation to occur.
+  // Replay that late operation before reconciliation so a periodic sync cannot erase it.
+  const latest = await captureBrowserSession();
+  const writableLatest = maskReadOnlyKarakeepChanges(snapshot, latest);
+  if (!sessionStatesEqual(current, writableLatest)) {
+    const lateArchives = findTabsToArchive(current, writableLatest);
+    desired = rebaseSessionChange(current, writableLatest, desired);
+    await writeSessionStorage(snapshot, desired, lateArchives);
+    wroteStorage = true;
+    archives = [...archives, ...lateArchives];
+    current = writableLatest;
+  }
+
+  if (wroteStorage) {
+    const verification = await readSessionStorage(settings, current);
+    if (!sessionStatesEqual(verification.state, desired)) {
+      desired = rebaseSessionChange(base, current, verification.state);
+      await writeSessionStorage(verification, desired, []);
+    }
+  }
+
+  const conflict = !sessionStatesEqual(base, remoteBeforeWrite);
   if (conflict || !sessionStatesEqual(current, desired)) await reconcileBrowser(desired);
   await S.setSessionSnapshot(desired);
   await S.saveCache({ ...cacheFromState(desired, desired), driver: settings.driver });
   await S.setSyncState({ dirty: false, lastSync: Date.now(), lastError: '', pendingSince: 0 });
-  await S.logActivity(conflict ? 'conflict' : 'sync', `session:${trigger}`);
+  if (trigger !== 'periodic' || conflict || browserChanged || archives.length) {
+    await S.logActivity(conflict ? 'conflict' : 'sync', `session:${trigger}`);
+  }
   return { ok: true, conflict, archived: archives.length };
 }

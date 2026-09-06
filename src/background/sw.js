@@ -5,6 +5,7 @@ import { synchronizeSession } from './session.js';
 import * as S from '../lib/settings.js';
 
 const DEBOUNCE_MS = 2500;
+const PERIODIC_SYNC_MINUTES = 1;
 const RESTORE_FLAG_KEY = 'restoring'; // { until: ts } — survives SW restarts
 const RESTORE_LOCK_MS = 30000;
 
@@ -55,7 +56,9 @@ async function doSync(reason) {
 }
 
 async function scheduleRetry(errMsg) {
+  const previous = await S.getSyncState();
   await S.setSyncState({ dirty: true, lastError: errMsg, pendingSince: Date.now() });
+  if (previous.lastError !== errMsg) await S.logActivity('error', errMsg);
   const existing = await chrome.alarms.get('retry');
   if (!existing) chrome.alarms.create('retry', { delayInMinutes: 1 });
 }
@@ -93,6 +96,16 @@ chrome.tabGroups.onMoved.addListener(() => scheduleSync('group-moved'));
 // ---- Retry alarm ----------------------------------------------------------
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === 'periodic-sync') {
+    if (await isRestoring()) return;
+    try {
+      await queueSessionSync('periodic');
+    } catch (e) {
+      await scheduleRetry(String(e?.message || e));
+    }
+    await updateBadge();
+    return;
+  }
   if (alarm.name !== 'retry') return;
   const st = await S.getSyncState();
   if (!st.dirty) { chrome.alarms.clear('retry').catch(() => {}); return; }
@@ -168,11 +181,13 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     await S.logActivity('info', 'installed');
     chrome.runtime.openOptionsPage();
   }
+  chrome.alarms.create('periodic-sync', { periodInMinutes: PERIODIC_SYNC_MINUTES });
   await updateBadge();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   // Wait for Chromium's own session restoration, then make it match central storage.
+  chrome.alarms.create('periodic-sync', { periodInMinutes: PERIODIC_SYNC_MINUTES });
   startupPending = true;
   setTimeout(async () => {
     try { await queueSessionSync('startup', true); } catch (e) {
