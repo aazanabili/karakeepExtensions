@@ -14,6 +14,24 @@ let lang;
 let t;
 let filterQuery = '';
 let visibleLists = [];
+let groupOrder = []; // user-arranged list names; empty = default alphabetical order
+let collapsedGroups = new Set(); // folded list names (persisted per browser)
+
+async function loadGroupLayout() {
+  try {
+    const o = await chrome.storage.local.get(['groupOrder', 'collapsedGroups']);
+    if (Array.isArray(o.groupOrder)) groupOrder = o.groupOrder.filter((n) => typeof n === 'string');
+    if (Array.isArray(o.collapsedGroups)) collapsedGroups = new Set(o.collapsedGroups.filter((n) => typeof n === 'string'));
+  } catch { /* storage unavailable — fall back to defaults */ }
+}
+
+function saveGroupOrder() {
+  chrome.storage.local.set({ groupOrder }).catch(() => {});
+}
+
+function saveCollapsedGroups() {
+  chrome.storage.local.set({ collapsedGroups: [...collapsedGroups] }).catch(() => {});
+}
 
 const $ = (sel) => document.querySelector(sel);
 const grid = $('#grid');
@@ -293,7 +311,11 @@ quickModal.addEventListener('keydown', (e) => {
 
 function sortLists(lists) {
   const non = settings.nonListName || 'non';
+  const rank = new Map(groupOrder.map((name, i) => [name, i]));
   return [...lists].sort((a, b) => {
+    const ra = rank.has(a.name) ? rank.get(a.name) : Infinity;
+    const rb = rank.has(b.name) ? rank.get(b.name) : Infinity;
+    if (ra !== rb) return ra - rb;
     if (a.name === non) return 1;
     if (b.name === non) return -1;
     return a.name.localeCompare(b.name);
@@ -332,9 +354,13 @@ function renderLists() {
         </span>
       </li>`).join('');
 
+    const collapsed = collapsedGroups.has(list.name);
+    const cardsDraggable = !filterQuery.trim();
     return `
-    <section class="card" data-list="${esc(list.name)}">
+    <section class="card${collapsed ? ' collapsed' : ''}" data-list="${esc(list.name)}" draggable="${cardsDraggable ? 'true' : 'false'}">
       <div class="card-head">
+        <span class="drag-handle" title="${esc(t('moveGroup'))}">⋮⋮</span>
+        <button class="collapse-btn" data-collapse="${li}" title="${esc(collapsed ? t('expand') : t('collapse'))}" aria-expanded="${collapsed ? 'false' : 'true'}">▾</button>
         <span class="color-dot" style="background:${esc(color)}"></span>
         <span class="card-name" title="${esc(list.name)}">${esc(list.name)}</span>
         ${liveBadge}
@@ -439,6 +465,17 @@ async function checkReadiness() {
 // ---- List Actions ------------------------------------------------------------
 
 grid.addEventListener('click', async (e) => {
+  const collapseBtn = e.target.closest('[data-collapse]');
+  if (collapseBtn) {
+    const list = visibleLists[Number(collapseBtn.dataset.collapse)];
+    if (list) {
+      if (collapsedGroups.has(list.name)) collapsedGroups.delete(list.name);
+      else collapsedGroups.add(list.name);
+      saveCollapsedGroups();
+      renderLists();
+    }
+    return;
+  }
   const linkEl = e.target.closest('.link-item');
   if (linkEl) {
     chrome.tabs.create({ url: linkEl.dataset.url, active: true });
@@ -460,6 +497,68 @@ grid.addEventListener('click', async (e) => {
   const res = await send({ type: 'restore', name: list.name, mode: btn.dataset.act === 'here' ? 'current' : 'window' });
   btn.disabled = false;
   if (!res?.ok) console.warn('restore failed', res);
+});
+
+// ---- Groups: drag & drop reorder + fold ----------------------------------------
+
+let cardDragName = null;
+
+function clearCardDropIndicators() {
+  grid.querySelectorAll('.card-drop-before,.card-drop-after')
+    .forEach((el) => el.classList.remove('card-drop-before', 'card-drop-after'));
+}
+
+grid.addEventListener('dragstart', (e) => {
+  const card = e.target.closest?.('.card');
+  if (!card || e.target.closest('button') || e.target.closest('.link-item')) {
+    e.preventDefault();
+    return;
+  }
+  cardDragName = card.dataset.list;
+  card.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  try { e.dataTransfer.setData('text/plain', cardDragName); } catch { /* not required */ }
+});
+
+grid.addEventListener('dragover', (e) => {
+  if (!cardDragName) return;
+  const card = e.target.closest?.('.card');
+  if (!card || card.dataset.list === cardDragName) return;
+  e.preventDefault(); // allow drop
+  e.dataTransfer.dropEffect = 'move';
+  clearCardDropIndicators();
+  const r = card.getBoundingClientRect();
+  const before = (e.clientY - r.top) < r.height / 2;
+  card.classList.add(before ? 'card-drop-before' : 'card-drop-after');
+});
+
+grid.addEventListener('drop', (e) => {
+  if (!cardDragName) return;
+  const card = e.target.closest?.('.card');
+  clearCardDropIndicators();
+  const from = cardDragName;
+  cardDragName = null;
+  if (!card || card.dataset.list === from) return;
+  e.preventDefault();
+  const r = card.getBoundingClientRect();
+  const before = (e.clientY - r.top) < r.height / 2;
+  const names = visibleLists.map((l) => l.name).filter((n) => n !== from);
+  const idx = names.indexOf(card.dataset.list) + (before ? 0 : 1);
+  names.splice(idx, 0, from);
+  // Merge the visible order back into the full stored order
+  // (the visible view may be filtered, so keep hidden lists in place).
+  const visibleSet = new Set(visibleLists.map((l) => l.name));
+  const queue = [...names];
+  groupOrder = sortLists(cache.lists || []).map((l) =>
+    visibleSet.has(l.name) ? queue.shift() : l.name);
+  saveGroupOrder();
+  renderLists();
+});
+
+grid.addEventListener('dragend', () => {
+  cardDragName = null;
+  clearCardDropIndicators();
+  grid.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging'));
 });
 
 // ---- Top Bar Actions --------------------------------------------------------
@@ -509,6 +608,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   if (changes.sync) renderStatus();
   if (changes.quickLinks) renderQuickLinks();
+  if (changes.groupOrder && Array.isArray(changes.groupOrder.newValue)) {
+    groupOrder = changes.groupOrder.newValue.filter((n) => typeof n === 'string');
+    renderLists();
+  }
+  if (changes.collapsedGroups && Array.isArray(changes.collapsedGroups.newValue)) {
+    collapsedGroups = new Set(changes.collapsedGroups.newValue.filter((n) => typeof n === 'string'));
+    renderLists();
+  }
 });
 
 // ---- Init ----------------------------------------------------------------------
@@ -520,6 +627,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   t = makeT(lang);
   applyTheme(settings.theme);
   applyI18n(document, t, lang);
+  await loadGroupLayout();
   renderEngines();
   renderQuickLinks();
   renderLists();
