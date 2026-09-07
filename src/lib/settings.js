@@ -25,7 +25,8 @@ export const DEFAULT_SETTINGS = {
   nonListName: 'non',
   theme: 'auto',             // 'auto' | 'light' | 'dark'
   lang: 'auto',              // 'auto' | 'ar' | 'en'
-  quickLinksListName: 'QuickLinks' // protected list name on server
+  quickLinksListName: 'QuickLinks', // protected list name on server
+  archiveClosedTabs: false   // if true, closed tabs go to Archive
 };
 
 const DEFAULT_SYNC = { dirty: false, lastSync: 0, lastError: '', pendingSince: 0 };

@@ -611,7 +611,7 @@ export async function synchronizeSession(trigger = 'auto') {
   }
 
   const remoteBeforeWrite = remoteScope;
-  let archives = browserChanged ? findTabsToArchive(base, current) : [];
+  let archives = (browserChanged && settings.archiveClosedTabs) ? findTabsToArchive(base, current) : [];
   let desiredScope = rebaseSessionChange(base, current, remoteScope);
   let desiredStorage = settings.driver === 'local'
     ? replaceSessionScope(snapshot.state, desiredScope, scopeNames)
@@ -623,7 +623,7 @@ export async function synchronizeSession(trigger = 'auto') {
   const latest = filterSessionState(await captureBrowserSession(activeGroupIds), activeNames);
   const writableLatest = maskReadOnlyKarakeepChanges(snapshot, latest);
   if (!sessionStatesEqual(current, writableLatest)) {
-    const lateArchives = findTabsToArchive(current, writableLatest);
+    const lateArchives = settings.archiveClosedTabs ? findTabsToArchive(current, writableLatest) : [];
     desiredScope = rebaseSessionChange(current, writableLatest, desiredScope);
     desiredStorage = settings.driver === 'local'
       ? replaceSessionScope(snapshot.state, desiredScope, scopeNames)

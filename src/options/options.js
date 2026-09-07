@@ -27,6 +27,7 @@ async function load() {
   $('#server-url').value = s.serverUrl;
   $('#api-key').value = s.apiKey;
   $('#non-name').value = s.nonListName;
+  $('#archive-closed').checked = s.archiveClosedTabs;
   $('#theme').value = s.theme;
   $('#lang').value = s.lang;
   toggleDriverSections(s.driver);
@@ -55,6 +56,7 @@ async function save() {
     serverUrl,
     apiKey: $('#api-key').value.trim(),
     nonListName: $('#non-name').value.trim() || 'non',
+    archiveClosedTabs: $('#archive-closed').checked,
     theme: $('#theme').value,
     lang: $('#lang').value
   });
