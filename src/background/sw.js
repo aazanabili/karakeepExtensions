@@ -36,7 +36,7 @@ function queueSessionSync(trigger) {
 }
 
 function registerActiveGroup(id, name) {
-  if (!Number.isInteger(id) || !name) return Promise.resolve();
+  if (!Number.isInteger(id) || name === undefined) return Promise.resolve();
   const result = activeGroupQueue.then(async () => {
     const groups = await S.getActiveGroups();
     await S.setActiveGroups([...groups.filter((group) => group.id !== id), { id, name }]);
@@ -164,15 +164,24 @@ chrome.tabs.onUpdated.addListener((_id, info, tab) => {
 chrome.tabs.onReplaced?.addListener((addedTabId) => { void scheduleIfActiveTab(addedTabId, 'tab-replaced'); });
 
 chrome.tabGroups.onCreated.addListener((group) => {
-  groupTitles.set(group.id, group.title || '');
+  void (async () => {
+    groupTitles.set(group.id, group.title || '');
+    if (!await isActiveGroup(group.id)) {
+      await registerActiveGroup(group.id, group.title || '');
+      scheduleSync('group-created');
+    }
+  })();
 });
 chrome.tabGroups.onUpdated.addListener((group) => {
   void (async () => {
     groupTitles.set(group.id, group.title || '');
-    if (await isActiveGroup(group.id)) {
-      await registerActiveGroup(group.id, group.title);
-      scheduleSync('group-updated');
+    if (!await isActiveGroup(group.id)) {
+      await registerActiveGroup(group.id, group.title || '');
+    } else {
+      // Update the name in storage if it changed
+      await registerActiveGroup(group.id, group.title || '');
     }
+    scheduleSync('group-updated');
   })();
 });
 chrome.tabGroups.onRemoved.addListener((group) => {

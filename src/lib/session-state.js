@@ -79,7 +79,7 @@ export function findTabsToArchive(baseInput, changedInput) {
     const currentList = changedByName.get(list.name);
     const wholeGroupClosed = list.kind === 'group' && !currentList &&
       list.tabs.every((tab) => !currentLocations.has(tab.url));
-    if (wholeGroupClosed) continue;
+    if (wholeGroupClosed && list.tabs.length > 1) continue;
     const currentUrls = urls(currentList);
     for (const tab of list.tabs) {
       if (currentUrls.has(tab.url)) continue;

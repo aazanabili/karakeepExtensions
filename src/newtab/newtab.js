@@ -360,6 +360,8 @@ function renderLists() {
     <section class="card${collapsed ? ' collapsed' : ''}" data-list="${esc(list.name)}" draggable="${cardsDraggable ? 'true' : 'false'}">
       <div class="card-head">
         <span class="drag-handle" title="${esc(t('moveGroup'))}">⋮⋮</span>
+        <button class="move-btn" data-move="-1" data-name="${esc(list.name)}" title="Move Left">‹</button>
+        <button class="move-btn" data-move="1" data-name="${esc(list.name)}" title="Move Right">›</button>
         <button class="collapse-btn" data-collapse="${li}" title="${esc(collapsed ? t('expand') : t('collapse'))}" aria-expanded="${collapsed ? 'false' : 'true'}">▾</button>
         <span class="color-dot" style="background:${esc(color)}"></span>
         <span class="card-name" title="${esc(list.name)}">${esc(list.name)}</span>
@@ -465,6 +467,32 @@ async function checkReadiness() {
 // ---- List Actions ------------------------------------------------------------
 
 grid.addEventListener('click', async (e) => {
+  const moveBtn = e.target.closest('.move-btn');
+  if (moveBtn) {
+    const fromName = moveBtn.dataset.name;
+    const dir = Number(moveBtn.dataset.move); // -1 or 1
+
+    const names = visibleLists.map((l) => l.name);
+    const idx = names.indexOf(fromName);
+    if (idx < 0) return;
+
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= names.length) return;
+
+    // Swap visible items
+    [names[idx], names[newIdx]] = [names[newIdx], names[idx]];
+    
+    // Merge back into full order
+    const visibleSet = new Set(names);
+    const queue = [...names];
+    groupOrder = sortLists(cache.lists || []).map((l) =>
+      visibleSet.has(l.name) ? queue.shift() : l.name);
+    
+    saveGroupOrder();
+    renderLists();
+    return;
+  }
+
   const collapseBtn = e.target.closest('[data-collapse]');
   if (collapseBtn) {
     const list = visibleLists[Number(collapseBtn.dataset.collapse)];
