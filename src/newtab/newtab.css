@@ -449,6 +449,8 @@ body > * { position: relative; z-index: 1; }
 
 .banner button:hover { background: var(--accent-strong); }
 
+.banner[hidden] { display: none !important; }
+
 /* ========== Grid & Cards ========== */
 .grid {
   display: grid;

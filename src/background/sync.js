@@ -72,7 +72,27 @@ async function readQuickLinksStorage(settings) {
 async function writeQuickLinksStorage(snapshot, links) {
   const normalized = normalizeQuickLinks(links);
   if (snapshot.context.kind === 'local') {
+    // Anything deleted must go to the archive: diff against the current file
+    // before overwriting, then append removals to Archive.txt.
+    let previous = [];
+    try {
+      const current = await LocalFS.readQuickLinks(snapshot.context.handle, snapshot.context.fileName);
+      previous = normalizeQuickLinks(current.links);
+    } catch { /* first write — nothing to archive */ }
+    const desiredUrls = new Set(normalized.map((item) => item.url));
+    const removed = previous.filter((item) => !desiredUrls.has(item.url));
     await LocalFS.writeQuickLinks(snapshot.context.handle, snapshot.context.fileName, normalized);
+    if (removed.length) {
+      await LocalFS.appendArchive(
+        snapshot.context.handle,
+        removed.map((item) => ({
+          group: 'QuickLinks',
+          title: item.title || item.url,
+          url: item.url,
+          removedAt: Date.now()
+        }))
+      );
+    }
     return;
   }
 
@@ -102,8 +122,87 @@ async function writeQuickLinksStorage(snapshot, links) {
 
   for (const bookmark of bookmarks) {
     const url = normalizeUrl(bookmark.url) || bookmark.url;
-    if (!desiredUrls.has(url)) await driver.removeFromList(list.id, bookmark.id);
+    if (desiredUrls.has(url)) continue;
+    // Anything deleted must go to the archive: keep the bookmark in the
+    // Archive list before removing it from QuickLinks (never delete it).
+    try {
+      let archiveList = null;
+      const allLists = await driver.getLists();
+      archiveList = allLists.find((item) => item.name === 'Archive') || null;
+      if (!archiveList) archiveList = await driver.createList('Archive');
+      if (archiveList) await driver.addToList(archiveList.id, bookmark.id);
+    } catch { /* archiving is best-effort — still remove from QuickLinks below */ }
+    await driver.removeFromList(list.id, bookmark.id);
   }
+}
+
+/**
+ * Best-effort archive for QuickLinks that disappear from the local cache
+ * when adopting a newer storage version. Never throws.
+ */
+async function archiveDisappearingQuickLinks(settings, snapshot, disappearing) {
+  if (!disappearing?.length) return;
+  try {
+    if (settings.driver === 'local') {
+      const handle = snapshot?.context?.handle;
+      if (!handle) return;
+      await LocalFS.appendArchive(
+        handle,
+        disappearing.map((item) => ({
+          group: 'QuickLinks',
+          title: item.title || item.url,
+          url: item.url,
+          removedAt: Date.now()
+        }))
+      );
+      return;
+    }
+    const driver = snapshot?.context?.driver;
+    if (!driver) return;
+    const allLists = await driver.getLists();
+    let archiveList = allLists.find((item) => item.name === 'Archive') || null;
+    if (!archiveList) archiveList = await driver.createList('Archive');
+    if (!archiveList) return;
+    for (const item of disappearing) {
+      try {
+        const bookmark = await driver.createLink(item.url, item.title || item.url);
+        if (bookmark?.id) await driver.addToList(archiveList.id, bookmark.id);
+      } catch { /* per-link best effort */ }
+    }
+  } catch { /* archiving must never break the sync */ }
+}
+
+/**
+ * Adopt a storage version into the local cache. Storage is the sole source
+ * of truth: whatever is in storage wins, including deletions.
+ * - Missing list/file is auto re-created from the browser (container only).
+ * - Any links that disappear via adoption are archived first, never lost silently.
+ * Returns the links that should now be treated as local.
+ */
+async function adoptRemoteQuickLinks(settings, remote, local, reason) {
+  const adopted = hydrateRemoteLinks(remote.links, local);
+  if (quickLinksEqual(local, adopted)) return adopted;
+
+  // The QuickLinks container itself is auto-managed: if the list/file is
+  // gone entirely, re-create it from the browser instead of wiping.
+  // (Content deletions inside an existing storage are adopted below.)
+  if (!remote.exists && local.length > 0) {
+    await writeQuickLinksStorage(remote, local);
+    await S.logActivity('quick-link', `QuickLinks: storage re-created from browser (${reason})`);
+    return local;
+  }
+
+  // Storage wins — including an empty storage: disappearing links are
+  // archived first, then the storage version is adopted.
+
+  const adoptedUrls = new Set(adopted.map((link) => link.url));
+  const disappearing = local.filter((link) => !adoptedUrls.has(link.url));
+  if (disappearing.length) {
+    await archiveDisappearingQuickLinks(settings, remote, disappearing);
+    await S.logActivity('conflict', `QuickLinks: ${disappearing.length} link(s) archived (${reason})`);
+  }
+  await S.setQuickLinks(adopted);
+  return adopted;
 }
 
 async function refreshQuickLinksFromStorage(settings) {
@@ -127,8 +226,7 @@ async function refreshQuickLinksFromStorage(settings) {
     return merged;
   }
 
-  const adopted = hydrateRemoteLinks(remote.links, local);
-  if (!quickLinksEqual(local, adopted)) await S.setQuickLinks(adopted);
+  const adopted = await adoptRemoteQuickLinks(settings, remote, local, 'refresh');
   return adopted;
 }
 
@@ -151,8 +249,7 @@ export async function mutateQuickLinks(op) {
   const baseline = await readQuickLinksStorage(settings);
 
   if (!quickLinksEqual(local, baseline.links)) {
-    const adopted = hydrateRemoteLinks(baseline.links, local);
-    await S.setQuickLinks(adopted);
+    const adopted = await adoptRemoteQuickLinks(settings, baseline, local, 'conflict-baseline');
     await S.logActivity('conflict', 'QuickLinks: storage version adopted');
     return { ok: false, conflict: true, links: adopted };
   }
@@ -160,8 +257,7 @@ export async function mutateQuickLinks(op) {
   const next = applyQuickLinkOperation(local, op);
   const fresh = await readQuickLinksStorage(settings);
   if (!quickLinksEqual(baseline.links, fresh.links)) {
-    const adopted = hydrateRemoteLinks(fresh.links, local);
-    await S.setQuickLinks(adopted);
+    const adopted = await adoptRemoteQuickLinks(settings, fresh, local, 'conflict-fresh');
     await S.logActivity('conflict', 'QuickLinks: operation cancelled');
     return { ok: false, conflict: true, links: adopted };
   }
