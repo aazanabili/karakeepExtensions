@@ -118,7 +118,7 @@ async function readKarakeepSession(settings, browserState, includeNames = null) 
       metadata.kind = 'non';
       metadata.color = '';
     }
-    const bookmarks = await driver.getListBookmarks(list.id);
+    const bookmarks = (await driver.getListBookmarks(list.id)).bookmarks;
     const compactOrder = metadata.order.every((key) => key.length === 4);
     const orderByKey = new Map(metadata.order.map((key, index) => [key, index]));
     const tabs = bookmarks
@@ -287,7 +287,7 @@ async function writeKarakeepSession(snapshot, desiredInput, archives) {
       snapshot.context.set(desiredList.name, entry);
     }
 
-    const current = await snapshot.driver.getListBookmarks(entry.list.id);
+    const current = (await snapshot.driver.getListBookmarks(entry.list.id)).bookmarks;
     const currentByUrl = new Map(current.map((bookmark) => [normalizeUrl(bookmark.url) || bookmark.url, bookmark]));
     const desiredUrls = new Set(desiredList.tabs.map((tab) => tab.url));
     const orderKeys = [];
@@ -338,7 +338,7 @@ async function writeKarakeepSession(snapshot, desiredInput, archives) {
   for (const [name, entry] of snapshot.context) {
     const storedList = snapshot.state.lists.find((list) => list.name === name);
     if (isReadOnlyKarakeepEntry(entry) || desiredNames.has(name) || storedList?.kind !== 'non') continue;
-    for (const bookmark of await snapshot.driver.getListBookmarks(entry.list.id)) {
+    for (const bookmark of (await snapshot.driver.getListBookmarks(entry.list.id)).bookmarks) {
       const url = normalizeUrl(bookmark.url) || bookmark.url;
       if (archives.some((item) => item.url === url)) await addToArchive(bookmark.id);
       await snapshot.driver.removeFromList(entry.list.id, bookmark.id);

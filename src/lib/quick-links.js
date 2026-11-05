@@ -59,6 +59,62 @@ export function stripOrderPrefix(title) {
   return { order: match ? Number(match[1]) : 9999, title: match ? match[2] : (title || '') };
 }
 
+/** Survives Karakeep's crawler, which replaces bookmark link titles with the page title. */
+export const QUICK_LINK_NOTE_MARKER = 'tabsync:ql:v1';
+
+export function encodeQuickLinkNote(existingNote, index, title) {
+  const payload = `${QUICK_LINK_NOTE_MARKER};${index};${encodeURIComponent(title || '')}`;
+  const kept = String(existingNote || '')
+    .split('\n')
+    .filter((line) => !line.startsWith(`${QUICK_LINK_NOTE_MARKER};`));
+  const userNote = kept.join('\n').trim();
+  return userNote ? `${userNote}\n${payload}` : payload;
+}
+
+export function parseQuickLinkNote(note) {
+  const line = String(note || '').split('\n').find((item) => item.startsWith(`${QUICK_LINK_NOTE_MARKER};`));
+  if (!line) return null;
+  const rest = line.slice(QUICK_LINK_NOTE_MARKER.length + 1);
+  const sep = rest.indexOf(';');
+  if (sep < 0) return null;
+  const order = Number(rest.slice(0, sep));
+  if (!Number.isInteger(order) || order < 0) return null;
+  let title = rest.slice(sep + 1);
+  try { title = decodeURIComponent(title); } catch { /* keep the raw payload */ }
+  return { order, title };
+}
+
+/**
+ * Authority is the note. A legacy `01 - Title` prefix is only a fallback.
+ * A crawled page title has neither, so it must not become a new order key.
+ */
+export function parseStoredQuickLink(bookmark, sourceIndex = 0) {
+  const noted = parseQuickLinkNote(bookmark?.note);
+  if (noted) {
+    return {
+      url: bookmark.url,
+      title: noted.title,
+      order: noted.order,
+      fromNote: true,
+      fromPrefix: false,
+      sourceIndex,
+      note: bookmark.note || ''
+    };
+  }
+  const rawTitle = String(bookmark?.title || '');
+  const matched = /^(\d+)\s*-\s*/.test(rawTitle);
+  const legacy = stripOrderPrefix(rawTitle);
+  return {
+    url: bookmark?.url,
+    title: matched ? legacy.title : rawTitle,
+    order: matched ? legacy.order : null,
+    fromNote: false,
+    fromPrefix: matched,
+    sourceIndex,
+    note: bookmark?.note || ''
+  };
+}
+
 export function orderedTitle(index, link) {
   return `${String(index + 1).padStart(2, '0')} - ${link.title || hostOf(link.url)}`;
 }

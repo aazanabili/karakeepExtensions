@@ -7,8 +7,10 @@ import * as LocalFS from '../lib/drivers/localfs.js';
 import { captureBrowserSession, parseSessionDescription, sessionOrderKey } from './session.js';
 import {
   applyQuickLinkOperation,
+  encodeQuickLinkNote,
   normalizeQuickLinks,
   orderedTitle,
+  parseStoredQuickLink,
   quickLinksEqual,
   stripOrderPrefix
 } from '../lib/quick-links.js';
@@ -54,15 +56,19 @@ async function readQuickLinksStorage(settings) {
       context: { kind: 'karakeep', driver, listName, list: null, bookmarks: [] }
     };
   }
-  const bookmarks = await driver.getListBookmarks(list.id);
+  const loaded = await driver.getListBookmarks(list.id);
+  const bookmarks = loaded.bookmarks;
   const links = bookmarks
-    .map((bookmark) => {
-      const parsed = stripOrderPrefix(bookmark.title);
-      return { ...bookmark, title: parsed.title, order: parsed.order };
-    })
-    .sort((a, b) => a.order - b.order);
+    .map((bookmark, sourceIndex) => parseStoredQuickLink(bookmark, sourceIndex))
+    .sort((a, b) => {
+      const ao = a.order ?? Number.MAX_SAFE_INTEGER;
+      const bo = b.order ?? Number.MAX_SAFE_INTEGER;
+      return ao - bo || a.sourceIndex - b.sourceIndex;
+    });
   return {
     exists: true,
+    truncated: loaded.truncated,
+    parsed: links,
     links: normalizeQuickLinks(links),
     storageId: `karakeep:${driver.base}:${listName}`,
     context: { kind: 'karakeep', driver, listName, list, bookmarks }
@@ -107,16 +113,19 @@ async function writeQuickLinksStorage(snapshot, links) {
     const link = normalized[index];
     const title = orderedTitle(index, link);
     const existing = currentByUrl.get(link.url);
+    const note = encodeQuickLinkNote(existing?.note, index, link.title || '');
     if (!existing) {
-      const bookmark = await driver.createLink(link.url, title);
+      const bookmark = await driver.createLink(link.url, title, note);
       await driver.addToList(list.id, bookmark.id);
       await driver.req(`/bookmarks/${encodeURIComponent(bookmark.id)}`, {
-        method: 'PATCH', body: { title }
+        method: 'PATCH', body: { title, note }
       });
-    } else if (existing.title !== title) {
+    } else if (existing.title !== title || existing.note !== note) {
       await driver.req(`/bookmarks/${encodeURIComponent(existing.id)}`, {
-        method: 'PATCH', body: { title }
+        method: 'PATCH', body: { title, note }
       });
+      existing.title = title;
+      existing.note = note;
     }
   }
 
@@ -179,8 +188,48 @@ async function archiveDisappearingQuickLinks(settings, snapshot, disappearing) {
  * - Any links that disappear via adoption are archived first, never lost silently.
  * Returns the links that should now be treated as local.
  */
+function keepUnpagedLocalLinks(remote, local) {
+  if (!remote?.truncated) return remote;
+  const base = remote.parsed || remote.links || [];
+  const seen = new Set(base.map((link) => normalizeUrl(link.url) || link.url));
+  const kept = local.filter((link) => link.url && !seen.has(link.url));
+  if (!kept.length) return remote;
+  return {
+    ...remote,
+    links: [...(remote.links || []), ...kept],
+    parsed: remote.parsed ? [...remote.parsed, ...kept] : remote.parsed
+  };
+}
+
+function preferLocalNames(remoteLinks, local) {
+  const localByUrl = new Map(normalizeQuickLinks(local).map((link, index) => [link.url, { ...link, index }]));
+  return remoteLinks.map((link) => {
+    const saved = localByUrl.get(link.url);
+    if (!saved) return link;
+    // A crawled page title has no note and no order prefix. Do not let it
+    // replace the name the user saved, or push the link to the end.
+    if (!link.fromNote && !link.fromPrefix && saved.title && saved.title !== link.title) {
+      return { ...link, title: saved.title, order: link.order ?? saved.index };
+    }
+    if (link.order == null) return { ...link, order: saved.index };
+    return link;
+  }).sort((a, b) => {
+    const ao = a.order ?? Number.MAX_SAFE_INTEGER;
+    const bo = b.order ?? Number.MAX_SAFE_INTEGER;
+    return ao - bo || (a.sourceIndex ?? 0) - (b.sourceIndex ?? 0);
+  });
+}
+
+function canonicalQuickLinks(remote, local) {
+  const safe = keepUnpagedLocalLinks(remote, local);
+  const source = safe.parsed || safe.links || [];
+  // Only Karakeep reads carry note/prefix flags. Local files are already canonical.
+  const named = safe.parsed ? preferLocalNames(source, local) : source;
+  return normalizeQuickLinks(named);
+}
+
 async function adoptRemoteQuickLinks(settings, remote, local, reason) {
-  const adopted = hydrateRemoteLinks(remote.links, local);
+  const adopted = hydrateRemoteLinks(canonicalQuickLinks(remote, local), local);
   if (quickLinksEqual(local, adopted)) return adopted;
 
   // The QuickLinks container itself is auto-managed: if the list/file is
@@ -214,9 +263,10 @@ async function refreshQuickLinksFromStorage(settings) {
     // One-time migration approved by the user: preserve both sides without data loss.
     // Existing browser links come first so their edits/order are uploaded once.
     const localUrls = new Set(local.map((link) => link.url));
+    const remoteCanonical = canonicalQuickLinks(remote, local);
     const merged = normalizeQuickLinks([
       ...local,
-      ...remote.links.filter((link) => !localUrls.has(link.url))
+      ...remoteCanonical.filter((link) => !localUrls.has(link.url))
     ]);
     if (!remote.exists || !quickLinksEqual(remote.links, merged)) {
       await writeQuickLinksStorage(remote, merged);
@@ -227,7 +277,29 @@ async function refreshQuickLinksFromStorage(settings) {
   }
 
   const adopted = await adoptRemoteQuickLinks(settings, remote, local, 'refresh');
+  if (!remote.truncated) await repairQuickLinkMetadata(remote, adopted);
   return adopted;
+}
+
+/** Restore names and order without deleting links. Crawl must not win. */
+async function repairQuickLinkMetadata(snapshot, links) {
+  if (snapshot?.context?.kind !== 'karakeep') return;
+  const { driver } = snapshot.context;
+  const bookmarks = snapshot.context.bookmarks || [];
+  const byUrl = new Map(bookmarks.map((item) => [normalizeUrl(item.url) || item.url, item]));
+  for (let index = 0; index < links.length; index++) {
+    const link = links[index];
+    const existing = byUrl.get(link.url);
+    if (!existing?.id) continue;
+    const title = orderedTitle(index, link);
+    const note = encodeQuickLinkNote(existing.note, index, link.title || '');
+    if (existing.title === title && existing.note === note) continue;
+    await driver.req(`/bookmarks/${encodeURIComponent(existing.id)}`, {
+      method: 'PATCH', body: { title, note }
+    });
+    existing.title = title;
+    existing.note = note;
+  }
 }
 
 /**
@@ -247,8 +319,9 @@ export async function mutateQuickLinks(op) {
   }
 
   const baseline = await readQuickLinksStorage(settings);
+  const baselineLinks = canonicalQuickLinks(baseline, local);
 
-  if (!quickLinksEqual(local, baseline.links)) {
+  if (!quickLinksEqual(local, baselineLinks)) {
     const adopted = await adoptRemoteQuickLinks(settings, baseline, local, 'conflict-baseline');
     await S.logActivity('conflict', 'QuickLinks: storage version adopted');
     return { ok: false, conflict: true, links: adopted };
@@ -256,7 +329,7 @@ export async function mutateQuickLinks(op) {
 
   const next = applyQuickLinkOperation(local, op);
   const fresh = await readQuickLinksStorage(settings);
-  if (!quickLinksEqual(baseline.links, fresh.links)) {
+  if (!quickLinksEqual(baselineLinks, canonicalQuickLinks(fresh, local))) {
     const adopted = await adoptRemoteQuickLinks(settings, fresh, local, 'conflict-fresh');
     await S.logActivity('conflict', 'QuickLinks: operation cancelled');
     return { ok: false, conflict: true, links: adopted };
@@ -334,7 +407,7 @@ export async function refreshCache() {
         color: '',
         order: []
       };
-      const bms = await driver.getListBookmarks(l.id);
+      const bms = (await driver.getListBookmarks(l.id)).bookmarks;
       const compactOrder = metadata.order.every((key) => key.length === 4);
       const orderByKey = new Map(metadata.order.map((key, index) => [key, index]));
       const ordered = bms

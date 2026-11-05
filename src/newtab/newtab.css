@@ -232,9 +232,11 @@ body > * { position: relative; z-index: 1; }
 
 /* ========== Quick Links ========== */
 .quick-links-section {
-  max-width: 760px;
+  width: min(1200px, calc(100% - 32px));
+  max-width: none;
   margin: 18px auto 0;
   padding: 14px 18px 16px;
+  overflow: visible;
   background: var(--card);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
@@ -290,12 +292,18 @@ body > * { position: relative; z-index: 1; }
 .quick-links-grid {
   display: flex;
   flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: flex-start;
   gap: 8px;
+  width: 100%;
+  overflow: visible;
 }
 
 .quick-link-item {
   display: flex;
   align-items: center;
+  flex: 0 1 auto;
+  max-width: 100%;
   gap: 8px;
   padding: 8px 14px;
   background: var(--bg);
@@ -888,7 +896,7 @@ input:focus-visible,
   #web-search { text-align: center; }
   .primary-btn { width: 100%; }
   .grid { grid-template-columns: 1fr; padding: 14px; gap: 14px; }
-  .quick-links-section { margin-inline: 14px; }
+  .quick-links-section { width: auto; margin-inline: 14px; }
   .filter-search-wrap { padding: 0 14px; }
 }
 

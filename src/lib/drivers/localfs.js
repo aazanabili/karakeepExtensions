@@ -144,13 +144,17 @@ export async function readQuickLinks(handle, fileName) {
       const prefix = /^(\d+)\s*-\s*(.*)$/.exec(rawLabel);
       const label = prefix ? prefix[2].trim() : rawLabel;
       const url = normalizeUrl(line.slice(tab + 1).trim());
-      if (url) links.push({ title: label, url, order: prefix ? Number(prefix[1]) : 9999 });
+      if (url) links.push({ title: label, url, order: prefix ? Number(prefix[1]) : null, sourceIndex: links.length });
     } else {
       const url = normalizeUrl(line);
-      if (url) links.push({ title: '', url, order: 9999 });
+      if (url) links.push({ title: '', url, order: null, sourceIndex: links.length });
     }
   }
-  links.sort((a, b) => a.order - b.order);
+  links.sort((a, b) => {
+    const ao = a.order ?? Number.MAX_SAFE_INTEGER;
+    const bo = b.order ?? Number.MAX_SAFE_INTEGER;
+    return ao - bo || a.sourceIndex - b.sourceIndex;
+  });
   return {
     exists: true,
     links: links.map(({ title, url }) => ({ title, url })),

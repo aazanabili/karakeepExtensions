@@ -38,18 +38,40 @@ export class KarakeepDriver {
     return res.json();
   }
 
-  /** Cursor-paginated collector: iterates pages until nextCursor is null. */
-  async collect(path, field) {
-    const out = [];
+  /**
+   * Cursor-paginated collector. A full page with no cursor is treated as
+   * truncated: some servers stop at 20 or 100 and would otherwise hide every
+   * link past that page.
+   */
+  async collectPages(path, field) {
+    const items = [];
     let cursor = null;
+    let truncated = false;
+    const seen = new Set();
+    const limit = 100;
     do {
       const sep = path.includes('?') ? '&' : '?';
-      const q = `${path}${sep}limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+      const q = `${path}${sep}limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
       const page = await this.req(q);
-      out.push(...(page?.[field] || []));
-      cursor = page?.nextCursor || null;
+      const batch = page?.[field] || [];
+      items.push(...batch);
+      const next = page?.nextCursor ?? page?.next_cursor ?? null;
+      const nextCursor = next == null || next === '' ? null : String(next);
+      if (nextCursor && seen.has(nextCursor)) {
+        truncated = true;
+        break;
+      }
+      if (nextCursor) seen.add(nextCursor);
+      cursor = nextCursor;
+      if (!cursor && (batch.length === limit || batch.length === 20)) truncated = true;
     } while (cursor);
-    return out;
+    return { items, truncated };
+  }
+
+  /** Cursor-paginated collector: iterates pages until nextCursor is null. */
+  async collect(path, field) {
+    const { items } = await this.collectPages(path, field);
+    return items;
   }
 
   /** All lists: [{id, name, ...}] */
@@ -78,24 +100,38 @@ export class KarakeepDriver {
     return this.req(`/lists/${encodeURIComponent(listId)}`, { method: 'DELETE' });
   }
 
-  /** All bookmarks inside a list: [{id, url, title}] */
+  /** All bookmarks inside a list: [{id, url, title, note}]. */
   async getListBookmarks(listId) {
-    const bms = await this.collect(`/lists/${encodeURIComponent(listId)}/bookmarks`, 'bookmarks');
-    return bms
-      .map((b) => ({
-        id: b.id,
-        url: b?.content?.url || '',
-        title: b.title || '',
-        archived: !!b.archived
-      }))
-      .filter((b) => b.url);
+    const { items, truncated } = await this.collectPages(
+      `/lists/${encodeURIComponent(listId)}/bookmarks`,
+      'bookmarks'
+    );
+    return {
+      truncated,
+      bookmarks: items
+        .map((b) => ({
+          id: b.id,
+          url: b?.content?.url || '',
+          title: b.title || '',
+          note: b.note || '',
+          archived: !!b.archived
+        }))
+        .filter((b) => b.url)
+    };
   }
 
   /** Create a link bookmark (idempotent per URL — server returns the existing one). */
-  createLink(url, title) {
+  createLink(url, title, note) {
     return this.req('/bookmarks', {
       method: 'POST',
-      body: { type: 'link', url, title: title || null, source: 'extension', crawlPriority: 'low' }
+      body: {
+        type: 'link',
+        url,
+        title: title || null,
+        ...(note ? { note } : {}),
+        source: 'extension',
+        crawlPriority: 'low'
+      }
     });
   }
 
