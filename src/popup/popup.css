@@ -151,6 +151,37 @@ button.primary:hover { background: var(--accent-strong); }
 #btn-dash { flex: 1; }
 button.icon { width: 38px; flex-shrink: 0; }
 
+.about-panel {
+  margin: 8px 14px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.about-panel[hidden] { display: none; }
+
+.about-dev {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.about-dev strong { color: var(--text); font-size: 14px; }
+
+.about-panel a {
+  color: var(--accent-strong);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.about-panel a:hover { text-decoration: underline; }
+
 .log { padding: 10px 14px 14px; }
 
 .log h2 {

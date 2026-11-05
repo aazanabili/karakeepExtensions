@@ -627,6 +627,12 @@ $('#btn-lang').addEventListener('click', async () => {
 
 $('#btn-settings').addEventListener('click', () => chrome.runtime.openOptionsPage());
 
+const aboutModal = $('#about-modal');
+$('#btn-about').addEventListener('click', () => { aboutModal.hidden = false; });
+$('#btn-about-close').addEventListener('click', () => { aboutModal.hidden = true; });
+aboutModal.addEventListener('click', (e) => { if (e.target === aboutModal) aboutModal.hidden = true; });
+aboutModal.addEventListener('keydown', (e) => { if (e.key === 'Escape') aboutModal.hidden = true; });
+
 // Live updates: any cache/sync change re-renders (e.g. after background refresh).
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;

@@ -66,6 +66,10 @@ $('#btn-sync').addEventListener('click', async (e) => {
 
 $('#btn-dash').addEventListener('click', () => chrome.tabs.create({}));
 $('#btn-settings').addEventListener('click', () => chrome.runtime.openOptionsPage());
+$('#btn-about').addEventListener('click', () => {
+  const panel = $('#about-panel');
+  panel.hidden = !panel.hidden;
+});
 
 chrome.storage.onChanged.addListener((_c, area) => { if (area === 'local') load(); });
 

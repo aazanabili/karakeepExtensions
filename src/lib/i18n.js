@@ -80,7 +80,12 @@ const STR = {
     expand: 'Expand',
     moveGroup: 'Drag to move group',
     quickConflict: 'Your action was cancelled because storage had a newer version. The latest stored links were loaded.',
-    quickOperationFailed: 'The quick-link operation failed.'
+    quickOperationFailed: 'The quick-link operation failed.',
+    about: 'About',
+    aboutDeveloper: 'Developer',
+    aboutWebsite: 'Developer website',
+    aboutSupport: 'Support via PayPal',
+    aboutRepo: 'GitHub repository'
   },
   ar: {
     appTitle: 'TabSync',
@@ -161,7 +166,12 @@ const STR = {
     expand: 'فتح',
     moveGroup: 'اسحب لنقل المجموعة',
     quickConflict: 'أُلغيت العملية لأن نظام التخزين يحتوي نسخة أحدث. تم تحميل آخر نسخة محفوظة.',
-    quickOperationFailed: 'فشلت عملية الرابط السريع.'
+    quickOperationFailed: 'فشلت عملية الرابط السريع.',
+    about: 'حول',
+    aboutDeveloper: 'المطوّر',
+    aboutWebsite: 'موقع المطوّر',
+    aboutSupport: 'الدعم عبر PayPal',
+    aboutRepo: 'المستودع على GitHub'
   }
 };
 

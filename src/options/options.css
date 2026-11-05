@@ -188,6 +188,27 @@ button.primary:hover { background: var(--accent-strong); }
 
 .small-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
 
+.about-section .about-dev {
+  margin: 0 0 8px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+}
+
+.about-section .about-dev strong { color: var(--text); font-size: 16px; }
+
+.about-section .about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0;
+}
+
+.about-section .about-links a {
+  color: var(--accent-strong);
+  font-weight: 650;
+}
+
 footer {
   display: flex;
   align-items: center;

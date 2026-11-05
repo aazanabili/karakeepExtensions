@@ -19,6 +19,7 @@
       <button id="btn-sync" class="icon-btn" data-i18n-title="syncNow" title="Sync now">&#10227;</button>
       <button id="btn-theme" class="icon-btn" title="Theme">&#9681;</button>
       <button id="btn-lang" class="icon-btn" title="Language">EN/AR</button>
+      <button id="btn-about" class="icon-btn about-btn" data-i18n="about" data-i18n-title="about" title="About">About</button>
       <button id="btn-settings" class="icon-btn" data-i18n-title="settings" title="Settings">&#9881;</button>
     </div>
   </header>
@@ -59,6 +60,24 @@
   </div>
 
   <div id="toast" class="toast" hidden></div>
+
+  <div id="about-modal" class="modal" hidden>
+    <div class="modal-content about-card" role="dialog" aria-labelledby="about-title">
+      <h3 id="about-title" data-i18n="about">About</h3>
+      <p class="about-dev">
+        <span data-i18n="aboutDeveloper">Developer</span>
+        <strong>Abdullatif Zanabili</strong>
+      </p>
+      <div class="about-links">
+        <a href="https://zanabili.dev/" target="_blank" rel="noopener noreferrer" data-i18n="aboutWebsite">Developer website</a>
+        <a href="https://paypal.me/Zanabili" target="_blank" rel="noopener noreferrer" data-i18n="aboutSupport">Support via PayPal</a>
+        <a href="https://github.com/aazanabili/karakeepExtensions" target="_blank" rel="noopener noreferrer" data-i18n="aboutRepo">GitHub repository</a>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-about-close" type="button" data-i18n="cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Add Quick Link Modal -->
   <div id="quick-modal" class="modal" hidden>
